@@ -1,0 +1,1 @@
+ALTER TABLE projects ADD COLUMN desired_state TEXT NOT NULL DEFAULT 'STOPPED' CHECK(desired_state IN ('STOPPED', 'RUNNING'));

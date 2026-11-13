@@ -1,0 +1,22 @@
+[package]
+name = "dockon-daemon"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+dockon-core.workspace = true
+dockon-ipc.workspace = true
+dockon-persistence.workspace = true
+dockon-orchestrator.workspace = true
+fs2 = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+[[bin]]
+name = "dockon-daemon"
+path = "src/main.rs"
+[[bin]]
+name = "dockonctl"
+path = "src/ctl.rs"

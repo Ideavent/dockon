@@ -1,0 +1,9 @@
+[package]
+name = "dockon-persistence"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+dockon-core.workspace = true
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }

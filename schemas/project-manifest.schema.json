@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dockon.dev/schemas/project-manifest-v1.json",
+  "title": "Dockon Sprint 01 HTTP project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "name", "root", "executable"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type":"string","pattern":"^[A-Za-z0-9_-]{1,64}$"},
+    "name": {"type":"string","minLength":1,"maxLength":200},
+    "root": {"type":"string","minLength":1,"description":"Existing absolute directory; canonicalized by daemon"},
+    "executable": {"type":"string","minLength":1,"description":"Explicitly selected existing absolute executable path"},
+    "args": {"type":"array","items":{"type":"string"},"default":[]},
+    "port": {"type":"integer","minimum":0,"maximum":65535,"default":0}
+  }
+}

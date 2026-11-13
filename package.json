@@ -1,0 +1,15 @@
+{
+  "name": "dockon-workspace",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "pnpm --filter @dockon/desktop dev",
+    "build": "pnpm --filter @dockon/desktop build",
+    "desktop": "pnpm --filter @dockon/desktop tauri dev",
+    "typecheck": "pnpm --filter @dockon/desktop typecheck"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "prettier": "^3.10.1"
+  }
+}

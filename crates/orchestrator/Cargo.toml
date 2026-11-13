@@ -1,0 +1,12 @@
+[package]
+name = "dockon-orchestrator"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+dockon-core.workspace = true
+dockon-persistence.workspace = true
+dockon-provider-native.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

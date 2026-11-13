@@ -1,0 +1,12 @@
+[package]
+name = "dockon-desktop"
+version.workspace = true
+edition.workspace = true
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = [] }
+serde_json.workspace = true
+dockon-core.workspace = true
+dockon-ipc.workspace = true
+tokio.workspace = true
