@@ -106,6 +106,7 @@ export function RuntimePage({
   const [runtime, setRuntime] = useState("node");
   const [version, setVersion] = useState("");
   const [error, setError] = useState("");
+  const [systemPath, setSystemPath] = useState("");
   const installed = useQuery({
     queryKey: ["runtimes"],
     queryFn: () => request<Installation[]>("runtime_installed"),
@@ -311,6 +312,45 @@ export function RuntimePage({
             <p>{t.empty}</p>
           </div>
         )}
+      </section>
+      <section className="runtime-catalog">
+        <h2>
+          {lang === "tr"
+            ? "Dosyadan sistem aracı seç"
+            : "Select a system executable"}
+        </h2>
+        <p className="muted">
+          {lang === "tr"
+            ? "Yukarıda seçili çalışma zamanı için tam dosya yolunu gir. Bu aracı kullan düğmesi sürüm kontrolünü çalıştırır; dosyaları taşımaz ve global PATH’i değiştirmez."
+            : "Enter the executable path for the runtime selected above. Use this tool runs a version check; it does not move files or change global PATH."}
+        </p>
+        <form
+          className="runtime-toolbar"
+          onSubmit={(e) => {
+            e.preventDefault();
+            system.mutate({
+              runtime,
+              executable: systemPath,
+              version_checked: false,
+            });
+          }}
+        >
+          <label htmlFor="system-executable">
+            {lang === "tr"
+              ? "Çalıştırılabilir dosyanın tam yolu"
+              : "Absolute executable path"}
+          </label>
+          <input
+            id="system-executable"
+            value={systemPath}
+            onChange={(e) => setSystemPath(e.target.value)}
+            required
+            disabled={system.isPending || !connected}
+          />
+          <Button disabled={!connected || system.isPending || !systemPath}>
+            {t.optIn}
+          </Button>
+        </form>
       </section>
       {candidates.data && (
         <section className="system-tools">

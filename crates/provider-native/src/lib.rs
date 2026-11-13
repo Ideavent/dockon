@@ -69,7 +69,8 @@ impl Instance {
             command
                 .env_remove("NODE_OPTIONS")
                 .env_remove("NODE_PATH")
-                .env_remove("PYTHONHOME");
+                .env_remove("PYTHONHOME")
+                .env_remove("PYTHONPATH");
         }
         #[cfg(unix)]
         command

@@ -1,4 +1,4 @@
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -115,6 +115,20 @@ try {
     .getByRole("button", { name: "Bu aracı kullan", exact: true })
     .click();
   await page.locator(".runtime-item").filter({ hasText: "Node.js" }).waitFor();
+  const manualPath = page.getByLabel("Çalıştırılabilir dosyanın tam yolu", {
+    exact: true,
+  });
+  const manualUse = page
+    .locator("form")
+    .filter({ has: manualPath })
+    .getByRole("button", { name: "Bu aracı kullan", exact: true });
+  await manualPath.fill(join(data, "missing-runtime.exe"));
+  await manualUse.click();
+  await page.getByRole("alert").waitFor();
+  await manualPath.fill(process.execPath);
+  await manualUse.click();
+  await expect(manualUse).toBeEnabled();
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByRole("button", { name: /^Projeler/ }).click();
   await page
     .getByRole("button", { name: "Yeni / içe aktar", exact: true })

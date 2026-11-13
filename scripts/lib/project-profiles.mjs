@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, access } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 export async function verifyProfile(h, installation) {
@@ -39,6 +40,51 @@ export async function verifyProfile(h, installation) {
   const running = await h.action("start", id);
   assert.equal((await fetch(`http://127.0.0.1:${running.port}/`)).status, 200);
   await h.action("stop", id);
+  const privateData = join(
+    h.data,
+    "instances",
+    Buffer.from(id).toString("hex"),
+    "app",
+  );
+  if (installation.runtime === "python") {
+    const venv = join(privateData, "venv");
+    const executable = join(
+      venv,
+      process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+    );
+    assert.equal(
+      await readFile(join(venv, "dockon-base.sha256"), "utf8"),
+      installation.executable_hash,
+    );
+    const prefixes = JSON.parse(
+      execFileSync(
+        executable,
+        [
+          "-c",
+          "import sys,json; print(json.dumps([sys.prefix,sys.base_prefix]))",
+        ],
+        { encoding: "utf8", windowsHide: true },
+      ),
+    );
+    assert.notEqual(prefixes[0], prefixes[1]);
+    await h.action("start", id);
+    await h.action("stop", id);
+    await writeFile(
+      join(venv, "dockon-base.sha256"),
+      "a different interpreter",
+    );
+    const refused = await h.wait((await h.call("start", { id })).id);
+    assert.equal(refused.status, "failed");
+    assert.match(refused.error, /different base interpreter/);
+    console.log(
+      "PASS private Python venv, environment reuse and rejection of a changed interpreter marker",
+    );
+  }
+  if (installation.runtime === "rust") {
+    await access(join(privateData, "cargo-target"));
+    await assert.rejects(access(join(root, "target")));
+    console.log("PASS concrete Rust toolchain and private build output");
+  }
   const imported = await h.call("project_import", {
     id: id + "-import",
     name: id + " imported",

@@ -248,10 +248,10 @@ pub async fn create(
         "rust" => {
             files.push((
                 "Cargo.toml",
-                "[package]\nname = \"dockon-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+                "[workspace]\n\n[package]\nname = \"dockon-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
                     .into(),
             ));
-            files.push(("src/main.rs","use std::{io::Write,net::TcpListener};\nfn main(){let listener=TcpListener::bind(format!(\"127.0.0.1:{}\",std::env::var(\"PORT\").unwrap())).unwrap();for stream in listener.incoming(){if let Ok(mut stream)=stream{let body=\"dockon - Rust\";let _=write!(stream,\"HTTP/1.1 200 OK\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}\",body.len(),body);}}}\n".into()));
+            files.push(("src/main.rs","use std::{io::{Read,Write},net::TcpListener};\nfn main(){let listener=TcpListener::bind(format!(\"127.0.0.1:{}\",std::env::var(\"PORT\").unwrap())).unwrap();for stream in listener.incoming(){if let Ok(mut stream)=stream{let _=stream.read(&mut [0u8;4096]);let body=\"dockon - Rust\";let _=write!(stream,\"HTTP/1.1 200 OK\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}\",body.len(),body);}}}\n".into()));
             "rust:run"
         }
         _ => bail!("Selected runtime has no project creation profile"),

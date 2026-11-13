@@ -82,6 +82,7 @@ impl RuntimeManager {
                 set(&mut environment, "GOMODCACHE", &cache.join("go-mod"));
                 environment.insert("GOTOOLCHAIN".into(), "local".into());
                 environment.insert("GOPROXY".into(), "off".into());
+                environment.insert("GOENV".into(), "off".into());
             }
             "rust" => {
                 let rustc = bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
@@ -98,6 +99,11 @@ impl RuntimeManager {
             }
             "python" => {
                 set(&mut environment, "PIP_CACHE_DIR", &cache.join("pip"));
+                set(
+                    &mut environment,
+                    "PYTHONPYCACHEPREFIX",
+                    &cache.join("python"),
+                );
                 environment.insert("PYTHONNOUSERSITE".into(), "1".into());
                 if binding.isolated_python {
                     let venv = data.join("venv");
@@ -114,6 +120,9 @@ impl RuntimeManager {
                             .args(["-m", "venv"])
                             .arg(&venv)
                             .env("PYTHONNOUSERSITE", "1")
+                            .envs(&environment)
+                            .env_remove("PYTHONHOME")
+                            .env_remove("PYTHONPATH")
                             .stdin(std::process::Stdio::null())
                             .stdout(std::process::Stdio::null())
                             .stderr(std::process::Stdio::null())
@@ -138,6 +147,24 @@ impl RuntimeManager {
                         "bin/python"
                     });
                     set(&mut environment, "VIRTUAL_ENV", &venv);
+                    let paths = std::iter::once(
+                        manifest
+                            .executable
+                            .parent()
+                            .context("Python venv binary directory unavailable")?
+                            .to_path_buf(),
+                    )
+                    .chain(std::env::split_paths(std::ffi::OsStr::new(
+                        environment
+                            .get("PATH")
+                            .map(String::as_str)
+                            .unwrap_or_default(),
+                    )))
+                    .collect::<Vec<_>>();
+                    environment.insert(
+                        "PATH".into(),
+                        std::env::join_paths(paths)?.to_string_lossy().into(),
+                    );
                 }
             }
             _ => bail!("This runtime cannot launch a native project profile"),

@@ -89,6 +89,14 @@ export class DaemonHarness {
   }
   async action(method, id) {
     const op = await this.wait((await this.call(method, { id })).id);
+    if (op.status !== "completed") {
+      const events = (await this.call("events", { after: 0 })).events
+        .filter((event) => event.project_id === id)
+        .slice(-12);
+      op.error +=
+        "\nRecent project output: " +
+        events.map((event) => event.message).join("\n");
+    }
     assert.equal(op.status, "completed", op.error);
     return (await this.call("list")).find((p) => p.manifest.id === id);
   }

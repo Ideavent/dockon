@@ -42,6 +42,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: node scripts/smoke.mjs
       - run: node scripts/project-smoke.mjs
+        env:
+          DOCKON_TEST_PYTHON_COMMAND: python
+          DOCKON_TEST_RUST: '1'
       - run: node scripts/runtime-smoke.mjs
       - run: node scripts/router-smoke.mjs
       - if: runner.os == 'Linux'
