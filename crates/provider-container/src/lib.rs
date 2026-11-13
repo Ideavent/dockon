@@ -319,31 +319,132 @@ impl ContainerInstance {
     }
 }
 
+fn local_docker_endpoint(endpoint: &str) -> bool {
+    endpoint.starts_with("unix:///") || endpoint.starts_with("npipe:////./pipe/")
+}
 async fn execute(engine: ContainerEngine, args: &[String], timeout: u64) -> Result<String> {
+    if engine == ContainerEngine::Docker {
+        let endpoint = if std::env::var_os("DOCKER_CONTEXT").is_none() {
+            match std::env::var("DOCKER_HOST") {
+                Ok(value) => value,
+                Err(_) => execute_raw(
+                    engine,
+                    &[
+                        "context".into(),
+                        "inspect".into(),
+                        "--format".into(),
+                        "{{.Endpoints.docker.Host}}".into(),
+                    ],
+                    8,
+                    false,
+                )
+                .await?
+                .trim()
+                .to_owned(),
+            }
+        } else {
+            execute_raw(
+                engine,
+                &[
+                    "context".into(),
+                    "inspect".into(),
+                    "--format".into(),
+                    "{{.Endpoints.docker.Host}}".into(),
+                ],
+                8,
+                false,
+            )
+            .await?
+            .trim()
+            .to_owned()
+        };
+        if !local_docker_endpoint(&endpoint) {
+            bail!("Remote/TCP Docker endpoints are not supported by this local provider");
+        }
+        let mut scoped = vec!["--host".into(), endpoint];
+        scoped.extend_from_slice(args);
+        return execute_raw(engine, &scoped, timeout, true).await;
+    }
+    if std::env::var_os("CONTAINER_CONNECTION").is_some()
+        || std::env::var("CONTAINER_HOST").is_ok_and(|host| !host.starts_with("unix:///"))
+    {
+        bail!("Remote Podman connections are not supported by this local provider");
+    }
+    execute_raw(engine, args, timeout, false).await
+}
+async fn execute_raw(
+    engine: ContainerEngine,
+    args: &[String],
+    timeout: u64,
+    scoped: bool,
+) -> Result<String> {
     let mut command = Command::new(engine.executable());
-    command.args(args).stdin(Stdio::null()).kill_on_drop(true);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if scoped {
+        command
+            .env_remove("DOCKER_CONTEXT")
+            .env_remove("DOCKER_HOST")
+            .env_remove("DOCKER_TLS_VERIFY")
+            .env_remove("DOCKER_CERT_PATH");
+    }
     #[cfg(windows)]
     command.creation_flags(0x08000000);
-    let output = tokio::time::timeout(Duration::from_secs(timeout), command.output())
-        .await
-        .context("Container provider command timed out")?
-        .context("Container provider unavailable")?;
-    if !output.status.success() {
+    let (stdout, stderr, status) = tokio::time::timeout(Duration::from_secs(timeout), async {
+        let mut child = command.spawn().context("Container provider unavailable")?;
+        let stdout = child.stdout.take().context("Provider stdout unavailable")?;
+        let stderr = child.stderr.take().context("Provider stderr unavailable")?;
+        let (stdout, stderr, status) =
+            tokio::try_join!(read_limited(stdout), read_limited(stderr), async {
+                Ok::<_, anyhow::Error>(child.wait().await?)
+            })?;
+        Ok::<_, anyhow::Error>((stdout, stderr, status))
+    })
+    .await
+    .context("Container provider command timed out")??;
+    if !status.success() {
         bail!(
             "{}: {}",
             engine.executable(),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&stderr)
                 .chars()
                 .take(2000)
                 .collect::<String>()
         );
     }
-    Ok(String::from_utf8(output.stdout)?)
+    Ok(String::from_utf8(stdout)?)
+}
+
+async fn read_limited(stream: impl tokio::io::AsyncRead + Unpin) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = vec![];
+    stream
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        bail!("Provider output exceeds 8 MiB");
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refuses_remote_engines_and_remote_named_pipes() {
+        assert!(local_docker_endpoint("unix:///var/run/docker.sock"));
+        assert!(local_docker_endpoint("npipe:////./pipe/docker_engine"));
+        assert!(!local_docker_endpoint("ssh://server"));
+        assert!(!local_docker_endpoint("tcp://127.0.0.1:2375"));
+        assert!(!local_docker_endpoint(
+            "npipe:////remote/pipe/docker_engine"
+        ));
+    }
     #[test]
     fn ownership_and_case_sensitive_resource_names() {
         let provider = ContainerProvider::new(uuid::Uuid::new_v4().to_string()).unwrap();

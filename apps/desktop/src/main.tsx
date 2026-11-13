@@ -33,6 +33,7 @@ type Project = {
     executable: string;
     provider?: "native" | "container";
     health?: { type: "http" | "tcp" };
+    services?: { provider?: "native" | "container" }[];
   };
   state: string;
   pid: number | null;
@@ -211,6 +212,14 @@ function App() {
     onSettled: () => cache.invalidateQueries({ queryKey: ["projects"] }),
   });
   const items = projects.data || [];
+  const providers = new Set(
+    items.flatMap((project) => [
+      project.manifest.provider || "native",
+      ...(project.manifest.services || []).map(
+        (service) => service.provider || "native",
+      ),
+    ]),
+  );
   const visible = selected
     ? events.filter((e) => e.project_id === selected)
     : events;
@@ -325,13 +334,13 @@ function App() {
             <div>
               <span>PROVIDER</span>
               <strong className="stat-word">
-                {items.some(
-                  (p) =>
-                    p.manifest.provider === "container" ||
-                    p.services?.some((s) => s.id),
-                )
-                  ? "Hybrid"
-                  : t.native}
+                {!connected || projects.isError
+                  ? "—"
+                  : providers.size > 1
+                    ? "Hybrid"
+                    : providers.has("container")
+                      ? "Container"
+                      : t.native}
               </strong>
               <Box size={20} />
             </div>
@@ -416,6 +425,20 @@ function App() {
                       ? t.stop
                       : t.start}
                   </Button>
+                  {project.state === "FAILED" && (
+                    <Button
+                      disabled={action.isPending || projects.isError}
+                      onClick={() =>
+                        action.mutate({
+                          method: "stop",
+                          params: { id: project.manifest.id },
+                        })
+                      }
+                    >
+                      <Square size={13} />
+                      {t.stop}
+                    </Button>
+                  )}
                   {project.port &&
                     project.state === "RUNNING" &&
                     project.manifest.health?.type !== "tcp" && (

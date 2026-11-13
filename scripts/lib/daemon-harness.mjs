@@ -115,12 +115,17 @@ export class DaemonHarness {
     await this.exited();
   }
   async exited() {
-    if (this.process.exitCode !== null) return;
-    await Promise.race([
-      new Promise((r) => this.process.once("exit", r)),
-      pause(12000).then(() => {
-        throw new Error("Daemon exit timed out");
-      }),
-    ]);
+    if (this.process.exitCode !== null || this.process.signalCode !== null)
+      return;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("Daemon exit timed out")),
+        12000,
+      );
+      this.process.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 }
