@@ -305,11 +305,18 @@ impl Manifest {
         Ok(result)
     }
     pub fn read(path: &Path) -> Result<Self> {
-        let raw = std::fs::read(path).context("Read manifest")?;
+        use std::io::Read;
+        if !path.is_file() {
+            bail!("Manifest must be a regular file");
+        }
+        let file = std::fs::File::open(path).context("Read manifest")?;
+        let mut raw = Vec::new();
+        file.take(65537).read_to_end(&mut raw)?;
         if raw.len() > 65536 {
             bail!("Manifest exceeds 64 KiB");
         }
-        let mut value: Self = serde_json::from_slice(&raw)?;
+        let content = raw.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&raw);
+        let mut value: Self = serde_json::from_slice(content)?;
         value.validate()?;
         value.root = value.root.canonicalize()?;
         if value.provider == Provider::Native {

@@ -35,7 +35,9 @@ async fn main() -> anyhow::Result<()> {
     }
     // SAFETY: this File exclusively owns the descriptor; it is never replaced
     // or closed while registered with AsyncFd.
-    let parent = unsafe { tokio::io::unix::AsyncFd::register(pipe)? };
+    let parent = unsafe {
+        tokio::io::unix::AsyncFd::register_with_interest(pipe, tokio::io::Interest::READABLE)?
+    };
     let early = tokio::select! {
         status=child.wait()=>Some(status?),
         _=parent_closed(&parent)=>None,
