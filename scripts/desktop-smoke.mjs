@@ -2,7 +2,7 @@ import { chromium } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import assert from "node:assert/strict";
 
 if (process.platform !== "win32")
@@ -19,6 +19,11 @@ const env = {
   DOCKON_DATA_DIR: data,
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
 };
+if (process.env.DOCKON_CADDY_EXECUTABLE)
+  env.PATH =
+    dirname(process.env.DOCKON_CADDY_EXECUTABLE) +
+    ";" +
+    (process.env.PATH || "");
 const app = spawn(join(root, "target/debug/dockon-desktop.exe"), [], {
   env,
   windowsHide: true,
@@ -135,11 +140,9 @@ try {
   await wizard
     .getByRole("button", { name: "Projeyi oluştur", exact: true })
     .click();
-  const card = page
-    .locator(".project-card")
-    .filter({
-      has: page.getByRole("heading", { name: "Wizard Node", exact: true }),
-    });
+  const card = page.locator(".project-card").filter({
+    has: page.getByRole("heading", { name: "Wizard Node", exact: true }),
+  });
   await card.getByRole("button", { name: "Başlat", exact: true }).click();
   await card
     .getByRole("button", { name: "Durdur", exact: true })
@@ -153,6 +156,83 @@ try {
   console.log(
     "PASS native runtime opt-in and new project wizard with real selected-runtime HTTP server",
   );
+  if (process.env.DOCKON_CADDY_EXECUTABLE) {
+    await page
+      .getByRole("button", { name: "Çalışma ortamları", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Sistem araçlarını bul", exact: true })
+      .click();
+    await page
+      .locator(".system-tool")
+      .filter({ has: page.getByText("Caddy", { exact: true }) })
+      .first()
+      .getByRole("button", { name: "Bu aracı kullan", exact: true })
+      .click();
+    await page.locator(".runtime-item").filter({ hasText: "Caddy" }).waitFor();
+    await page
+      .getByRole("button", { name: "Yerel adresler", exact: true })
+      .click();
+    const caddySelect = page.getByRole("combobox", { name: /Caddy sürümü/ });
+    await caddySelect.selectOption({
+      label: (await caddySelect.locator("option").allTextContents()).find((t) =>
+        t.startsWith("Caddy "),
+      ),
+    });
+    const route = page.locator(".route-row").filter({ hasText: "Wizard Node" });
+    await route.locator("input[type=checkbox]").first().check();
+    assert.equal(
+      await page
+        .getByLabel("Alan adı: Wizard Node", { exact: true })
+        .inputValue(),
+      "wizard-node.test",
+    );
+    await page
+      .getByLabel("Alan adı: Wizard Node", { exact: true })
+      .fill("custom.ui.test");
+    for (const label of ["HTTP portu", "HTTPS portu"]) {
+      const temporary = createServer();
+      await new Promise((r) => temporary.listen(0, "127.0.0.1", r));
+      const free = temporary.address().port;
+      await new Promise((r) => temporary.close(r));
+      await page
+        .getByRole("spinbutton", { name: label, exact: true })
+        .fill(String(free));
+    }
+    await page
+      .getByRole("button", { name: "Değişikliği önizle", exact: true })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Yönlendirici değişikliğini uygula",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByText("Yönlendirici çalışıyor", { exact: true })
+      .waitFor({ timeout: 30000 });
+    await page
+      .getByRole("button", { name: "Hosts kaydını önizle", exact: true })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Bu sistem değişikliğine onay ver",
+        exact: true,
+      })
+      .waitFor();
+    await page.screenshot({
+      path: ".local/screenshots/router-permissions.png",
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Vazgeç", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Yönlendiriciyi durdur", exact: true })
+      .click();
+    await page.getByText("Yönlendirici durduruldu", { exact: true }).waitFor();
+    console.log(
+      "PASS native editable .test domain, real router plan/apply and separate hosts permission preview without system changes",
+    );
+  }
   console.log(
     "PASS native Tauri/WebView2 import, real STARTING/RUNNING, HTTP readiness, streaming logs and stop",
   );

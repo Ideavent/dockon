@@ -1,0 +1,25 @@
+[package]
+name = "dockon-router"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+dockon-core.workspace = true
+dockon-provider-native.workspace = true
+dockon-runtime-manager.workspace = true
+sha2 = "0.10"
+sha1 = "0.10"
+base64 = "0.22"
+fs2 = "0.4"
+dunce = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_Com", "Win32_Security_Cryptography"] }
+
+[[bin]]
+name = "dockon-hosts-helper"
+path = "src/helper.rs"

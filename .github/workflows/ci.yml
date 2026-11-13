@@ -43,5 +43,6 @@ jobs:
       - run: node scripts/smoke.mjs
       - run: node scripts/project-smoke.mjs
       - run: node scripts/runtime-smoke.mjs
+      - run: node scripts/router-smoke.mjs
       - if: runner.os == 'Linux'
         run: node scripts/hybrid-smoke.mjs

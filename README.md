@@ -34,6 +34,7 @@ node scripts/smoke.mjs
 node scripts/hybrid-smoke.mjs
 node scripts/project-smoke.mjs
 node scripts/runtime-smoke.mjs
+node scripts/router-smoke.mjs
 node scripts/ui-smoke.mjs
 node scripts/desktop-smoke.mjs
 ```
@@ -47,3 +48,5 @@ The browser/native UI checks expect the Vite dev server to be running (`pnpm dev
 `runtime-smoke.mjs` downloads the current official Node LTS into an isolated test data directory, verifies its digest/version, runs a project and checks offline catalog recovery. Set `DOCKON_EXTENDED_RUNTIMES=1` to also download and verify supported PHP/.NET/Go/Caddy artifacts and launch project profiles. These are network integration checks, not publisher signature verification.
 
 Windows installed application target: C:\dockon. No production installer is available yet. Windows/macOS/Linux foundation and hybrid checks passed in the configured GitHub repository; new runtime work is still being verified. User projects and backups must survive uninstallation.
+
+The Local domains page defaults project names to `.test` and accepts edited full hostnames. Select a Caddy installation, projects and unprivileged ports, then preview and apply. The router does not start project processes. Hosts records and user CA trust have separate permission previews. Tests never apply changes to real system hosts or trust stores; live permission integration remains unverified. Windows trust targets the current user's ROOT store; macOS/Linux automatic trust is not yet supported.

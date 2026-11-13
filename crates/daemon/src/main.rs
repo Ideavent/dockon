@@ -15,8 +15,27 @@ struct DaemonState {
     store: dockon_persistence::Store,
     events: EventBus,
     shutdown: Arc<Notify>,
+    router: Arc<dockon_router::Router>,
 }
 impl DaemonState {
+    async fn system_apply(self: &Arc<Self>, token: String) -> Result<dockon_core::Operation> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.store.begin(&id, "system", "system.apply").await?;
+        let reply = self.store.operation(&id).await?;
+        let state = self.clone();
+        tokio::spawn(async move {
+            let error = state
+                .router
+                .permission_apply(&token)
+                .await
+                .err()
+                .map(|e| format!("{e:#}"));
+            if let Err(error) = state.store.finish(&id, error.as_deref()).await {
+                tracing::error!(%error,"Unable to record system permission outcome");
+            }
+        });
+        Ok(reply)
+    }
     async fn install(
         self: &Arc<Self>,
         runtime: String,
@@ -77,11 +96,23 @@ async fn main() -> Result<()> {
     let events = orchestrator.events.clone();
     let shutdown = Arc::new(Notify::new());
     let state = Arc::new(DaemonState {
+        router: Arc::new(dockon_router::Router::new(dir.clone(), runtimes.clone())?),
         projects: Arc::new(orchestrator),
         runtimes,
         store,
         events,
         shutdown: shutdown.clone(),
+    });
+    let router_state = state.clone();
+    let router_task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if let Ok(projects) = router_state.projects.list().await {
+                if let Err(error) = router_state.router.refresh(&projects).await {
+                    tracing::warn!(%error,"Router refresh failed");
+                }
+            }
+        }
     });
     let token = uuid::Uuid::new_v4().to_string();
     #[cfg(windows)]
@@ -131,6 +162,8 @@ async fn main() -> Result<()> {
             }
         }
     }
+    router_task.abort();
+    state.router.stop().await?;
     state.projects.shutdown().await?;
     std::fs::remove_file(dir.join("connection.json"))?;
     #[cfg(unix)]
@@ -171,6 +204,12 @@ async fn serve(
     }
     let response: Result<Response> = async {
         Ok(match request.command {
+            Command::SystemPlan {action} => Response::success(state.router.permission_plan(action).await?),
+            Command::SystemApply {token} => Response::success(state.system_apply(token).await?),
+            Command::RouterStatus => Response::success(state.router.status().await?),
+            Command::RouterPlan {settings} => Response::success(state.router.plan(settings,&state.projects.list().await?).await?),
+            Command::RouterApply {token} => {state.router.apply(&token,&state.projects.list().await?).await?;Response::success(state.router.status().await?)},
+            Command::RouterStop => {state.router.stop().await?;Response::success(state.router.status().await?)},
             Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"http_tcp", "container":"digest_pinned_http_tcp", "ai":"not_implemented"})),
             Command::Capabilities => {
                 let (docker,podman)=tokio::join!(dockon_provider_container::capability(dockon_core::ContainerEngine::Docker),dockon_provider_container::capability(dockon_core::ContainerEngine::Podman));

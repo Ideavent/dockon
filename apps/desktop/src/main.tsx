@@ -27,6 +27,7 @@ import "./styles.css";
 import { request, type Reply } from "./ipc/client";
 import { RuntimePage } from "./features/runtimes/RuntimePage";
 import { ProjectWizard } from "./features/projects/ProjectWizard";
+import { RouterPage } from "./features/routing/RouterPage";
 
 type Project = {
   manifest: {
@@ -105,7 +106,9 @@ const words = {
   },
 };
 function App() {
-  const [page, setPage] = useState<"projects" | "runtimes">("projects");
+  const [page, setPage] = useState<"projects" | "runtimes" | "routing">(
+    "projects",
+  );
   const [lang, setLang] = useState<"tr" | "en">("tr");
   const t = words[lang];
   const desktop = "__TAURI_INTERNALS__" in window;
@@ -253,6 +256,13 @@ function App() {
           <Box size={18} />
           {lang === "tr" ? "Çalışma ortamları" : "Runtimes"}
         </button>
+        <button
+          className={page === "routing" ? "nav-current" : "nav-link"}
+          onClick={() => setPage("routing")}
+        >
+          <Globe size={18} />
+          {lang === "tr" ? "Yerel adresler" : "Local domains"}
+        </button>
         <a className="nav-link" href="#activity">
           <Activity size={18} />
           {t.logs}
@@ -273,9 +283,13 @@ function App() {
             WORKSPACE <span className="slash">/</span>{" "}
             {page === "projects"
               ? t.projects
-              : lang === "tr"
-                ? "Çalışma ortamları"
-                : "Runtimes"}
+              : page === "routing"
+                ? lang === "tr"
+                  ? "Yerel adresler"
+                  : "Local domains"
+                : lang === "tr"
+                  ? "Çalışma ortamları"
+                  : "Runtimes"}
           </span>
           <div className="header-tools">
             <button
@@ -296,7 +310,9 @@ function App() {
           </div>
         </header>
         <div className="content">
-          {page === "runtimes" ? (
+          {page === "routing" ? (
+            <RouterPage connected={connected} lang={lang} />
+          ) : page === "runtimes" ? (
             <RuntimePage connected={connected} lang={lang} />
           ) : (
             <>

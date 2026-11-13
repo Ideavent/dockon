@@ -6,7 +6,7 @@ Work is in Sprint 03. Later sprints must not be called complete before their imp
 |---|---|
 | 01 foundation and lifecycle | Complete: Windows host/native UI checks and Windows/macOS/Linux CI passed |
 | 02 hybrid provider and isolation | Complete: Windows/macOS/Linux CI and Linux Docker integration passed at 4138370 |
-| 03 runtimes and web | In progress: publisher catalogs, managed installers and explicit runtime/project profiles implemented; router, HTTPS and server switching remain |
+| 03 runtimes and web | In progress: runtime/profile checkpoint passed all three OS CI targets at 9ba315f; local HTTP/HTTPS router and scoped permission previews pass Windows checks; web-server switching remains |
 | 04 databases, cache, mail | Pending |
 | 05 updates, backup, diagnostics | Pending |
 | 06 cloud AI | Pending |
@@ -22,3 +22,5 @@ Sprint 03 adds side-by-side Node.js, Windows PHP NTS, .NET SDK, Go and Caddy ins
 Project creation/import explicitly selects a registered installation. Startup checks executable integrity and rejects a mismatched executable. Source creation refuses existing target directories. Detection/import preserve existing source; no dependency installer is launched. Node/PHP/.NET/Go profiles and optional system Python/Rust profiles have separate launch adapters. Python and Rust managed downloads remain unsupported; Python venv and concrete Rust toolchain profiles need host verification. PHP uses per-project INI; runtime caches and mutable CLI state use private project data. Initial launch profiles are intentionally limited to detected supported entry points; a custom manifest remains available.
 
 The user supplies their own AI provider. Vendor, model and protocol stay unconfigured until its API contract is provided; see ADR 0003.
+
+Routing uses editable full domains with `.test` defaults, private Caddy CA storage, loopback listeners and separate hosts/trust approvals. Local backend checks passed HTTP/CA-verified HTTPS, independent stopped-route 503 updates, stale/replayed/forged approval rejection, failed-restart rollback, saved settings without autostart and unchanged real hosts. Native Windows UI checks passed editable `.test` routing, configuration preview/apply and separate hosts preview. Pure fixture tests passed scoped hosts writes, backup, preservation and stale-file rejection. Live elevation and trust mutations remain unverified; macOS/Linux automated trust is unsupported. Router changes still need cross-platform CI.

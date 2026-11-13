@@ -494,6 +494,20 @@ pub struct RuntimeInstallation {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Command {
+    SystemPlan {
+        action: SystemAction,
+    },
+    SystemApply {
+        token: String,
+    },
+    RouterStatus,
+    RouterPlan {
+        settings: RouterSettings,
+    },
+    RouterApply {
+        token: String,
+    },
+    RouterStop,
     Health,
     Capabilities,
     RuntimeCatalog {
@@ -545,6 +559,30 @@ pub enum Command {
         after: u64,
     },
     Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouterSettings {
+    pub runtime_installation: String,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub routes: Vec<ProjectRoute>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemAction {
+    HostsUpdate,
+    HostsRemove,
+    TrustCa,
+    UntrustCa,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectRoute {
+    pub project_id: String,
+    pub domain: String,
+    pub https: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
