@@ -101,6 +101,7 @@ pub struct Orchestrator {
     containers: ContainerProvider,
     data_dir: PathBuf,
     ports: PortAllocator,
+    runtimes: dockon_runtime_manager::RuntimeManager,
 }
 impl Orchestrator {
     pub async fn new(store: Store, data_dir: PathBuf) -> Result<Self> {
@@ -144,6 +145,7 @@ impl Orchestrator {
             entries.insert(id, entry);
         }
         Ok(Self {
+            runtimes: dockon_runtime_manager::RuntimeManager::new(data_dir.clone(), store.clone())?,
             entries: RwLock::new(entries),
             store,
             events: Arc::default(),
@@ -345,7 +347,7 @@ impl Orchestrator {
                 let (instance, port) = launch(
                     &child,
                     self.events.clone(),
-                    (&self.containers, &self.ports),
+                    (&self.containers, &self.ports, &self.runtimes),
                     &child_data,
                     &manifest.id,
                     &service.id,
@@ -382,7 +384,7 @@ impl Orchestrator {
         let (instance, port) = launch(
             &manifest,
             self.events.clone(),
-            (&self.containers, &self.ports),
+            (&self.containers, &self.ports, &self.runtimes),
             &app_data,
             &manifest.id,
             "app",

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dockon_core::{Manifest, Operation};
+use dockon_core::{Manifest, Operation, RuntimeInstallation};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     Row, SqlitePool,
@@ -81,6 +81,18 @@ impl Store {
             .bind(id)
             .execute(&self.0)
             .await?;
+        Ok(())
+    }
+    pub async fn runtimes(&self) -> Result<Vec<RuntimeInstallation>> {
+        sqlx::query("SELECT record FROM runtime_installations ORDER BY runtime,version")
+            .fetch_all(&self.0)
+            .await?
+            .into_iter()
+            .map(|row| Ok(serde_json::from_str(row.try_get("record")?)?))
+            .collect()
+    }
+    pub async fn save_runtime(&self, record: &RuntimeInstallation) -> Result<()> {
+        sqlx::query("INSERT INTO runtime_installations(id,runtime,version,record) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET runtime=excluded.runtime,version=excluded.version,record=excluded.record").bind(&record.id).bind(&record.runtime).bind(&record.version).bind(serde_json::to_string(record)?).execute(&self.0).await?;
         Ok(())
     }
 }

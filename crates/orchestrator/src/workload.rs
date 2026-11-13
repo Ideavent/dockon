@@ -47,19 +47,24 @@ impl OwnedInstance {
 pub(crate) async fn launch(
     manifest: &Manifest,
     events: EventBus,
-    providers: (&ContainerProvider, &PortAllocator),
+    providers: (
+        &ContainerProvider,
+        &PortAllocator,
+        &dockon_runtime_manager::RuntimeManager,
+    ),
     data_dir: &Path,
     project: &str,
     alias: &str,
     environment: &BTreeMap<String, String>,
 ) -> Result<(OwnedInstance, u16)> {
     manifest.validate()?;
-    let (containers, ports) = providers;
+    let (containers, ports, runtimes) = providers;
     let lease = ports.reserve(manifest.port)?;
     let port = lease.port;
     let mut instance = match manifest.provider {
         Provider::Native => {
-            let mut instance = Instance::spawn(manifest, port, data_dir, environment)?;
+            let (prepared, environment) = runtimes.prepare(manifest, data_dir, environment).await?;
+            let mut instance = Instance::spawn(&prepared, port, data_dir, &environment)?;
             if let Some(stdout) = instance.child.stdout.take() {
                 capture(
                     stdout,
@@ -123,7 +128,9 @@ async fn wait_ready(manifest: &Manifest, instance: &mut OwnedInstance, port: u16
         .no_proxy()
         .timeout(std::time::Duration::from_millis(300))
         .build()?;
-    for _ in 0..60 {
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_secs(manifest.startup_timeout_seconds);
+    while tokio::time::Instant::now() < deadline {
         if !instance.running().await? {
             bail!("Workload exited before readiness");
         }

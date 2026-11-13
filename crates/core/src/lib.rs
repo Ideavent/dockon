@@ -4,6 +4,82 @@ use std::path::{Path, PathBuf};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LaunchArg {
+    Literal(String),
+    Template(ArgumentTemplate),
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArgumentTemplate {
+    pub template: String,
+}
+impl From<&str> for LaunchArg {
+    fn from(value: &str) -> Self {
+        Self::Literal(value.into())
+    }
+}
+impl From<String> for LaunchArg {
+    fn from(value: String) -> Self {
+        Self::Literal(value)
+    }
+}
+impl LaunchArg {
+    pub fn template(value: impl Into<String>) -> Self {
+        Self::Template(ArgumentTemplate {
+            template: value.into(),
+        })
+    }
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Literal(value) => value,
+            Self::Template(value) => &value.template,
+        }
+    }
+    pub fn validate(&self) -> Result<()> {
+        if self.text().contains('\0') {
+            bail!("NUL is forbidden in launch arguments");
+        }
+        if let Self::Template(value) = self {
+            let mut rest = value.template.as_str();
+            while let Some(start) = rest.find("${") {
+                let end = rest[start..]
+                    .find('}')
+                    .context("Unclosed launch argument template")?
+                    + start;
+                let variable = &rest[start + 2..end];
+                if !matches!(variable, "DOCKON_PORT" | "DOCKON_HOST" | "DOCKON_DATA") {
+                    bail!("Unsupported launch argument template variable");
+                }
+                rest = &rest[end + 1..];
+            }
+        }
+        Ok(())
+    }
+    pub fn resolve(&self, port: u16, data: &Path) -> Result<String> {
+        self.validate()?;
+        Ok(match self {
+            Self::Literal(value) => value.clone(),
+            Self::Template(value) => value
+                .template
+                .replace("${DOCKON_PORT}", &port.to_string())
+                .replace("${DOCKON_HOST}", "127.0.0.1")
+                .replace("${DOCKON_DATA}", &data.to_string_lossy()),
+        })
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeBinding {
+    pub installation_id: String,
+    #[serde(default)]
+    pub isolated_python: bool,
+}
+fn default_start_timeout() -> u64 {
+    30
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
@@ -106,7 +182,11 @@ pub struct ServiceSpec {
     #[serde(default)]
     pub executable: PathBuf,
     #[serde(default)]
-    pub args: Vec<String>,
+    pub args: Vec<LaunchArg>,
+    #[serde(default)]
+    pub runtime: Option<RuntimeBinding>,
+    #[serde(default = "default_start_timeout")]
+    pub startup_timeout_seconds: u64,
     #[serde(default)]
     pub provider: Provider,
     #[serde(default)]
@@ -151,6 +231,8 @@ impl ServiceSpec {
             port: self.port,
             health: self.health.clone(),
             services: vec![],
+            runtime: self.runtime.clone(),
+            startup_timeout_seconds: self.startup_timeout_seconds,
         };
         manifest.validate()?;
         Ok(manifest)
@@ -171,7 +253,11 @@ pub struct Manifest {
     #[serde(default)]
     pub container: Option<ContainerSpec>,
     #[serde(default)]
-    pub args: Vec<String>,
+    pub args: Vec<LaunchArg>,
+    #[serde(default)]
+    pub runtime: Option<RuntimeBinding>,
+    #[serde(default = "default_start_timeout")]
+    pub startup_timeout_seconds: u64,
     #[serde(default)]
     pub port: u16,
     #[serde(default)]
@@ -215,8 +301,18 @@ impl Manifest {
                 .context("Container configuration required")?
                 .validate()?,
         }
-        if self.args.iter().any(|arg| arg.contains('\0')) {
-            bail!("NUL is forbidden in arguments");
+        for arg in &self.args {
+            arg.validate()?;
+        }
+        if self.startup_timeout_seconds == 0 || self.startup_timeout_seconds > 300 {
+            bail!("Startup timeout must be between 1 and 300 seconds");
+        }
+        if self
+            .runtime
+            .as_ref()
+            .is_some_and(|v| v.installation_id.is_empty() || v.installation_id.len() > 256)
+        {
+            bail!("Invalid runtime binding");
         }
         if let HealthCheck::Http { path } = &self.health {
             if !path.starts_with('/')
@@ -381,18 +477,73 @@ pub struct Operation {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeInstallation {
+    pub id: String,
+    pub runtime: String,
+    pub version: String,
+    pub platform: String,
+    pub root: PathBuf,
+    pub executable: PathBuf,
+    pub source: String,
+    pub archive_hash: Option<String>,
+    pub executable_hash: String,
+    pub signature_verified: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Command {
     Health,
     Capabilities,
+    RuntimeCatalog {
+        runtime: String,
+    },
+    RuntimeInstalled,
+    RuntimeInstall {
+        runtime: String,
+        version: String,
+    },
+    RuntimeDiscover,
+    RuntimeUseSystem {
+        runtime: String,
+        executable: PathBuf,
+    },
+    ProjectDetect {
+        root: PathBuf,
+    },
+    ProjectCreate {
+        id: String,
+        name: String,
+        root: PathBuf,
+        runtime_installation: String,
+    },
+    ProjectImport {
+        id: String,
+        name: String,
+        root: PathBuf,
+        runtime_installation: String,
+        profile: String,
+    },
     List,
-    Register { manifest_path: PathBuf },
-    Start { id: String },
-    Stop { id: String },
-    Operation { id: String },
-    Events { after: u64 },
-    Subscribe { after: u64 },
+    Register {
+        manifest_path: PathBuf,
+    },
+    Start {
+        id: String,
+    },
+    Stop {
+        id: String,
+    },
+    Operation {
+        id: String,
+    },
+    Events {
+        after: u64,
+    },
+    Subscribe {
+        after: u64,
+    },
     Shutdown,
 }
 
@@ -432,6 +583,24 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typed_templates_preserve_literal_arguments_and_reject_unknown_variables() {
+        let data = std::path::Path::new("/private/project");
+        assert_eq!(
+            LaunchArg::from("${DOCKON_PORT}")
+                .resolve(4321, data)
+                .unwrap(),
+            "${DOCKON_PORT}"
+        );
+        assert_eq!(
+            LaunchArg::template("${DOCKON_HOST}:${DOCKON_PORT}")
+                .resolve(4321, data)
+                .unwrap(),
+            "127.0.0.1:4321"
+        );
+        assert!(LaunchArg::template("${HOME}").validate().is_err());
+        assert!(LaunchArg::template("${DOCKON_PORT").validate().is_err());
+    }
     fn manifest(services: serde_json::Value) -> Manifest {
         serde_json::from_value(serde_json::json!({"schema_version":1,"id":"test","name":"test","root":std::env::current_dir().unwrap(),"executable":std::env::current_exe().unwrap(),"services":services})).unwrap()
     }
@@ -489,6 +658,8 @@ mod tests {
             container: None,
             health: HealthCheck::default(),
             services: vec![],
+            runtime: None,
+            startup_timeout_seconds: 30,
             args: vec![],
             port: 0,
         };

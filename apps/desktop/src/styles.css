@@ -1,4 +1,126 @@
 @import "tailwindcss";
+.runtime-catalog {
+  background: #101923;
+  border: 1px solid #25303f;
+  border-radius: 12px;
+  padding: 22px;
+  margin-bottom: 30px;
+}
+.runtime-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.runtime-toolbar h2 {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.runtime-picker {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.runtime-picker select {
+  background: #182536;
+  color: #c6d5e5;
+  border: 1px solid #344b62;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  min-width: 160px;
+}
+.muted {
+  color: #8a9fb6;
+  font-size: 12px;
+  line-height: 1.7;
+  margin-top: 16px;
+  overflow-wrap: anywhere;
+}
+.catalog-meta {
+  color: #617b94;
+  font-size: 10px;
+  margin-top: 16px;
+}
+.runtime-list {
+  display: grid;
+  gap: 12px;
+}
+.runtime-item {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+  padding: 20px;
+  background: #101923;
+  border: 1px solid #25303f;
+  border-radius: 10px;
+}
+.runtime-info {
+  min-width: 0;
+  flex: 1;
+}
+.runtime-info h2 span {
+  font-size: 12px;
+  color: #83a395;
+  margin-left: 8px;
+}
+.runtime-info p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #70b699;
+  font-size: 10px;
+  margin: 10px 0;
+}
+.runtime-info details {
+  color: #758ca5;
+  font-size: 10px;
+}
+.runtime-info summary {
+  cursor: pointer;
+}
+.runtime-info code {
+  display: block;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+}
+.runtime-info small {
+  display: block;
+  color: #b7a580;
+  margin-top: 10px;
+}
+.system-tools {
+  margin-top: 30px;
+}
+.system-tool {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 0;
+  border-bottom: 1px solid #25303f;
+}
+.system-tool strong {
+  font-size: 12px;
+}
+.system-tool code {
+  display: block;
+  font-size: 10px;
+  color: #7f97b0;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.system-tool > div {
+  min-width: 0;
+}
+.system-tool button {
+  flex-shrink: 0;
+}
+.sidebar > button {
+  margin-top: 6px;
+}
 .service-list {
   font-size: 10px;
   color: #90a6ba;
@@ -453,6 +575,9 @@ footer span:first-child {
   background: #0009;
   display: grid;
   place-items: center;
+  z-index: 10;
+  overflow-y: auto;
+  padding: 20px;
 }
 .modal {
   background: #152130;
@@ -460,6 +585,9 @@ footer span:first-child {
   border-radius: 12px;
   padding: 28px;
   width: 500px;
+  max-width: 100%;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
 }
 .modal label {
   display: block;
@@ -467,7 +595,8 @@ footer span:first-child {
   font-size: 12px;
   color: #98adc4;
 }
-.modal input {
+.modal input,
+.modal select {
   width: 100%;
   margin-top: 10px;
   background: #0c151f;
@@ -476,6 +605,19 @@ footer span:first-child {
   padding: 12px;
   color: #dae6f2;
   font-size: 12px;
+}
+.heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.project-wizard label {
+  margin-top: 16px;
+}
+.project-wizard .wizard-modes {
+  justify-content: flex-start;
+  margin-top: 12px;
 }
 .modal p {
   color: #7c93ac;

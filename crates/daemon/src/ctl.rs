@@ -7,6 +7,15 @@ async fn main() -> Result<()> {
     let command = match args.first().map(String::as_str) {
         Some("health") => Command::Health,
         Some("capabilities") => Command::Capabilities,
+        Some("runtimes") => Command::RuntimeInstalled,
+        Some("catalog") => Command::RuntimeCatalog {
+            runtime: args.get(1).context("Runtime id required")?.clone(),
+        },
+        Some("install") => Command::RuntimeInstall {
+            runtime: args.get(1).context("Runtime id required")?.clone(),
+            version: args.get(2).context("Version required")?.clone(),
+        },
+        Some("discover") => Command::RuntimeDiscover,
         Some("list") => Command::List,
         Some("register") => Command::Register {
             manifest_path: args.get(1).context("Manifest path required")?.into(),

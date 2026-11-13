@@ -16,7 +16,7 @@ try {
     .waitFor();
   assert.equal(
     await page
-      .getByRole("button", { name: "Proje içe aktar", exact: true })
+      .getByRole("button", { name: "Yeni / içe aktar", exact: true })
       .isEnabled(),
     false,
   );

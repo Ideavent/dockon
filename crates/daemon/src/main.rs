@@ -9,6 +9,50 @@ use tokio::{
     sync::Notify,
 };
 
+struct DaemonState {
+    projects: Arc<Orchestrator>,
+    runtimes: Arc<dockon_runtime_manager::RuntimeManager>,
+    store: dockon_persistence::Store,
+    events: EventBus,
+    shutdown: Arc<Notify>,
+}
+impl DaemonState {
+    async fn install(
+        self: &Arc<Self>,
+        runtime: String,
+        version: String,
+    ) -> Result<dockon_core::Operation> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let owner = format!("runtime:{runtime}");
+        self.store.begin(&id, &owner, "runtime.install").await?;
+        let response = self.store.operation(&id).await?;
+        let state = self.clone();
+        tokio::spawn(async move {
+            let (send, mut receive) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let events = state.events.clone();
+            let event_owner = owner.clone();
+            let logger = tokio::spawn(async move {
+                while let Some(message) = receive.recv().await {
+                    events.lock().await.push(&event_owner, "runtime", &message);
+                }
+            });
+            let progress: dockon_runtime_manager::Progress = Arc::new(move |message| {
+                let _ = send.send(message);
+            });
+            let result = state.runtimes.install(&runtime, &version, progress).await;
+            let _ = logger.await;
+            let error = result.err().map(|e| format!("{e:#}"));
+            if let Some(error) = &error {
+                state.events.lock().await.push(&owner, "error", error);
+            }
+            if let Err(error) = state.store.finish(&id, error.as_deref()).await {
+                tracing::error!(%error,"Unable to record runtime operation outcome");
+            }
+        });
+        Ok(response)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -25,10 +69,20 @@ async fn main() -> Result<()> {
     lock.try_lock_exclusive()
         .map_err(|_| anyhow::anyhow!("Dockon daemon is already running"))?;
     let store = dockon_persistence::Store::open(&dir.join("dockon.sqlite")).await?;
-    let orchestrator = Orchestrator::new(store, dir.clone()).await?;
+    let runtimes = Arc::new(dockon_runtime_manager::RuntimeManager::new(
+        dir.clone(),
+        store.clone(),
+    )?);
+    let orchestrator = Orchestrator::new(store.clone(), dir.clone()).await?;
     let events = orchestrator.events.clone();
-    let state = Arc::new(orchestrator);
     let shutdown = Arc::new(Notify::new());
+    let state = Arc::new(DaemonState {
+        projects: Arc::new(orchestrator),
+        runtimes,
+        store,
+        events,
+        shutdown: shutdown.clone(),
+    });
     let token = uuid::Uuid::new_v4().to_string();
     #[cfg(windows)]
     let endpoint = format!(r"\\.\pipe\dockon-{}", uuid::Uuid::new_v4());
@@ -72,12 +126,12 @@ async fn main() -> Result<()> {
                 };
                 #[cfg(unix)]
                 let (stream, _) = incoming?;
-                let state = state.clone(); let token = token.clone(); let events = events.clone(); let shutdown = shutdown.clone();
-                tokio::spawn(async move { if let Err(error) = serve(stream, token, state, events, shutdown).await { tracing::warn!(%error, "IPC connection failed"); } });
+                let state = state.clone(); let token = token.clone();
+                tokio::spawn(async move { if let Err(error) = serve(stream, token, state).await { tracing::warn!(%error, "IPC connection failed"); } });
             }
         }
     }
-    state.shutdown().await?;
+    state.projects.shutdown().await?;
     std::fs::remove_file(dir.join("connection.json"))?;
     #[cfg(unix)]
     std::fs::remove_file(endpoint)?;
@@ -88,9 +142,7 @@ async fn main() -> Result<()> {
 async fn serve(
     mut stream: impl AsyncRead + AsyncWrite + Unpin,
     token: String,
-    state: Arc<Orchestrator>,
-    events: EventBus,
-    shutdown: Arc<Notify>,
+    state: Arc<DaemonState>,
 ) -> Result<()> {
     let request: Request =
         tokio::time::timeout(std::time::Duration::from_secs(5), read_json(&mut stream)).await??;
@@ -105,7 +157,7 @@ async fn serve(
     if let Command::Subscribe { after } = request.command {
         let mut cursor = after;
         loop {
-            let batch = events.lock().await.batch(cursor);
+            let batch = state.events.lock().await.batch(cursor);
             if let Some(last) = batch.events.last() {
                 cursor = last.seq;
             }
@@ -124,18 +176,33 @@ async fn serve(
                 let (docker,podman)=tokio::join!(dockon_provider_container::capability(dockon_core::ContainerEngine::Docker),dockon_provider_container::capability(dockon_core::ContainerEngine::Podman));
                 Response::success(serde_json::json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"native":"http","docker":docker,"podman":podman,"ai":"not_implemented"}))
             },
-            Command::List => Response::success(state.list().await?),
-            Command::Register { manifest_path } => Response::success(state.register(Manifest::read(&manifest_path)?).await?),
-            Command::Start { id } => Response::success(state.submit(id, true).await?),
-            Command::Stop { id } => Response::success(state.submit(id, false).await?),
-            Command::Operation { id } => Response::success(state.operation(&id).await?),
+            Command::RuntimeCatalog { runtime } => Response::success(state.runtimes.catalog(&runtime).await?),
+            Command::RuntimeInstalled => Response::success(state.runtimes.installed().await?),
+            Command::RuntimeInstall { runtime,version } => Response::success(state.install(runtime,version).await?),
+            Command::RuntimeDiscover => Response::success(state.runtimes.discover()),
+            Command::RuntimeUseSystem { runtime,executable } => Response::success(state.runtimes.use_system(&runtime,&executable).await?),
+            Command::ProjectDetect {root} => Response::success(dockon_runtime_manager::projects::detect(&root)?),
+            Command::ProjectCreate {id,name,root,runtime_installation} => {
+                if state.projects.list().await?.iter().any(|p|p.manifest.id==id){anyhow::bail!("Project id is already registered");}
+                let manifest=dockon_runtime_manager::projects::create(&state.runtimes,&id,&name,&root,&runtime_installation).await?;
+                Response::success(state.projects.register(manifest).await?)
+            },
+            Command::ProjectImport {id,name,root,runtime_installation,profile} => {
+                let manifest=dockon_runtime_manager::projects::import(&state.runtimes,&id,&name,&root,&runtime_installation,&profile).await?;
+                Response::success(state.projects.register(manifest).await?)
+            },
+            Command::List => Response::success(state.projects.list().await?),
+            Command::Register { manifest_path } => Response::success(state.projects.register(Manifest::read(&manifest_path)?).await?),
+            Command::Start { id } => Response::success(state.projects.submit(id, true).await?),
+            Command::Stop { id } => Response::success(state.projects.submit(id, false).await?),
+            Command::Operation { id } => Response::success(state.store.operation(&id).await?),
             Command::Events { after } => {
-                let feed = events.lock().await;
+                let feed = state.events.lock().await;
                 Response::success(feed.batch(after))
             },
             Command::Subscribe { .. } => unreachable!(),
             Command::Shutdown => {
-                shutdown.notify_one();
+                state.shutdown.notify_one();
                 Response::success(serde_json::json!({"shutting_down":true}))
             }
         })

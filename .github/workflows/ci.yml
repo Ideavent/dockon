@@ -41,5 +41,7 @@ jobs:
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: node scripts/smoke.mjs
+      - run: node scripts/project-smoke.mjs
+      - run: node scripts/runtime-smoke.mjs
       - if: runner.os == 'Linux'
         run: node scripts/hybrid-smoke.mjs

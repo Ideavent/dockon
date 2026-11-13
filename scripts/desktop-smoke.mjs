@@ -62,7 +62,7 @@ try {
     }),
   );
   await page
-    .getByRole("button", { name: "Proje içe aktar", exact: true })
+    .getByRole("button", { name: "Manifest içe aktar", exact: true })
     .click();
   await page
     .getByLabel("Manifest dosyasının tam yolu", { exact: true })
@@ -96,6 +96,63 @@ try {
   await page.getByRole("button", { name: "Durdur", exact: true }).click();
   await page.getByRole("button", { name: "Başlat", exact: true }).waitFor();
   await assert.rejects(fetch(link));
+  await page
+    .getByRole("button", { name: "Çalışma ortamları", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Sistem araçlarını bul", exact: true })
+    .click();
+  const nodeTool = page
+    .locator(".system-tool")
+    .filter({ has: page.getByText("Node.js", { exact: true }) })
+    .first();
+  await nodeTool
+    .getByRole("button", { name: "Bu aracı kullan", exact: true })
+    .click();
+  await page.locator(".runtime-item").filter({ hasText: "Node.js" }).waitFor();
+  await page.getByRole("button", { name: /^Projeler/ }).click();
+  await page
+    .getByRole("button", { name: "Yeni / içe aktar", exact: true })
+    .click();
+  const wizard = page.getByRole("dialog", {
+    name: "Proje hazırla",
+    exact: true,
+  });
+  await wizard.getByLabel("Proje adı", { exact: true }).fill("Wizard Node");
+  await wizard
+    .getByLabel("Proje kimliği (harf, rakam, - ve _)", { exact: true })
+    .fill("wizard-node");
+  await wizard
+    .getByLabel("Proje klasörünün tam yolu", { exact: true })
+    .fill(join(data, "wizard-node"));
+  await wizard
+    .getByLabel("Çalışma zamanı ve sürüm", { exact: true })
+    .selectOption({
+      label: (
+        await wizard.locator("#project-runtime option").allTextContents()
+      ).find((t) => t.startsWith("node ")),
+    });
+  await wizard
+    .getByRole("button", { name: "Projeyi oluştur", exact: true })
+    .click();
+  const card = page
+    .locator(".project-card")
+    .filter({
+      has: page.getByRole("heading", { name: "Wizard Node", exact: true }),
+    });
+  await card.getByRole("button", { name: "Başlat", exact: true }).click();
+  await card
+    .getByRole("button", { name: "Durdur", exact: true })
+    .waitFor({ timeout: 20000 });
+  const wizardLink = await card
+    .getByRole("link", { name: "Tarayıcıda aç", exact: true })
+    .getAttribute("href");
+  assert.match(await (await fetch(wizardLink)).text(), /dockon · Node.js/);
+  await card.getByRole("button", { name: "Durdur", exact: true }).click();
+  await card.getByRole("button", { name: "Başlat", exact: true }).waitFor();
+  console.log(
+    "PASS native runtime opt-in and new project wizard with real selected-runtime HTTP server",
+  );
   console.log(
     "PASS native Tauri/WebView2 import, real STARTING/RUNNING, HTTP readiness, streaming logs and stop",
   );

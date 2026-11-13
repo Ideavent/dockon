@@ -21,7 +21,7 @@ Create/import a sample after building:
 .\scripts\New-SampleManifest.ps1
 ```
 
-Paste the returned absolute path into Import project. Projects start only when requested. Imports do not execute code. UI and daemon run as ordinary user. Closing the UI leaves the daemon and running projects intact. Run `target\debug\dockonctl shutdown` to stop the daemon and its workloads.
+Paste the returned absolute path into Import manifest. Alternatively, select an installed runtime on the Runtimes page and use New / import to create a project or detect an existing source folder. Projects start only when requested. Manifest imports do not execute code; explicit system runtime selection checks the selected executable's version. UI and daemon run as ordinary user. Closing the UI leaves the daemon and running projects intact. Run `target\debug\dockonctl shutdown` to stop the daemon and its workloads.
 
 ## Checks
 
@@ -32,6 +32,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 node scripts/smoke.mjs
 node scripts/hybrid-smoke.mjs
+node scripts/project-smoke.mjs
+node scripts/runtime-smoke.mjs
 node scripts/ui-smoke.mjs
 node scripts/desktop-smoke.mjs
 ```
@@ -42,4 +44,6 @@ The browser/native UI checks expect the Vite dev server to be running (`pnpm dev
 
 `hybrid-smoke.mjs` requires a running Docker Linux engine. It downloads only digest-pinned sample images as needed, creates uniquely labeled disposable test resources, verifies two-project Redis data isolation and recovery, then removes only those verified test resources. It does not touch existing Docker projects or images. Generic container launches are implemented; managed database catalogs and backup tooling are later sprints.
 
-Windows installed application target: C:\dockon. No production installer is available in Sprint 01. macOS/Linux builds require their own host dependencies and will be verified through CI when a GitHub remote is supplied. User projects and backups must survive uninstallation.
+`runtime-smoke.mjs` downloads the current official Node LTS into an isolated test data directory, verifies its digest/version, runs a project and checks offline catalog recovery. Set `DOCKON_EXTENDED_RUNTIMES=1` to also download and verify supported PHP/.NET/Go/Caddy artifacts and launch project profiles. These are network integration checks, not publisher signature verification.
+
+Windows installed application target: C:\dockon. No production installer is available yet. Windows/macOS/Linux foundation and hybrid checks passed in the configured GitHub repository; new runtime work is still being verified. User projects and backups must survive uninstallation.
