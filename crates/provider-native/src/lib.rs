@@ -25,20 +25,45 @@ impl Drop for Job {
 }
 
 impl Instance {
-    pub fn spawn(manifest: &Manifest, port: u16) -> Result<Self> {
+    pub fn spawn(
+        manifest: &Manifest,
+        port: u16,
+        data_dir: &std::path::Path,
+        environment: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self> {
         manifest.validate()?;
+        #[cfg(windows)]
         let mut command = Command::new(&manifest.executable);
+        #[cfg(unix)]
+        let mut command = {
+            let executable = std::env::current_exe()?;
+            let runner = executable
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Daemon executable directory unavailable"))?
+                .join("dockon-runner");
+            if !runner.is_file() {
+                bail!("Internal dockon-runner helper is missing");
+            }
+            let mut command = Command::new(runner);
+            command.arg(&manifest.executable);
+            command
+        };
         command
             .args(&manifest.args)
             .current_dir(&manifest.root)
             .env("PORT", port.to_string())
             .env("HOST", "127.0.0.1")
+            .env("DOCKON_PROJECT_DATA_DIR", data_dir)
+            .envs(environment)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(unix)]
-        command.process_group(0);
+        command
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .kill_on_drop(false);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
         let child = command.spawn()?;
@@ -112,8 +137,7 @@ impl Instance {
 #[cfg(unix)]
 impl Drop for Instance {
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(-self.group, libc::SIGKILL);
-        }
+        // Let the runner kill/reap its application group on private pipe EOF.
+        self.child.stdin.take();
     }
 }

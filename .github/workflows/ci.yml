@@ -1,5 +1,10 @@
 name: Dockon foundation
 on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
     strategy:
@@ -19,6 +24,7 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-${{ runner.arch }}-rust-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-rust-
       - uses: pnpm/action-setup@v4
         with:
           version: 11.25.0
@@ -35,3 +41,5 @@ jobs:
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: node scripts/smoke.mjs
+      - if: runner.os == 'Linux'
+        run: node scripts/hybrid-smoke.mjs

@@ -1,4 +1,19 @@
 @import "tailwindcss";
+.service-list {
+  font-size: 10px;
+  color: #90a6ba;
+  margin-bottom: 16px;
+}
+.service-list > div {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-top: 1px solid #25303f;
+}
+.status-degraded {
+  color: #f0c174;
+  background: #3b3020;
+}
 :root {
   font-family: Inter, "Segoe UI", sans-serif;
   color: #dce4ee;

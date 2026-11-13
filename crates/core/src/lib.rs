@@ -4,6 +4,151 @@ use std::path::{Path, PathBuf};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    #[default]
+    Native,
+    Container,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerEngine {
+    #[default]
+    Docker,
+    Podman,
+}
+impl ContainerEngine {
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerSpec {
+    #[serde(default)]
+    pub engine: ContainerEngine,
+    pub image: String,
+    pub internal_port: u16,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+}
+impl ContainerSpec {
+    pub fn validate(&self) -> Result<()> {
+        let (image, digest) = self
+            .image
+            .split_once("@sha256:")
+            .context("Container image must be pinned with @sha256:<64 hex digits>")?;
+        if image.is_empty()
+            || image.starts_with('-')
+            || image.chars().any(|c| c.is_whitespace() || c.is_control())
+            || digest.len() != 64
+            || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            bail!("Invalid pinned image reference");
+        }
+        if self.internal_port == 0 {
+            bail!("Container internal port must be nonzero");
+        }
+        if self.command.iter().any(|s| s.contains('\0')) {
+            bail!("NUL is forbidden in container arguments");
+        }
+        if self
+            .entrypoint
+            .as_ref()
+            .is_some_and(|s| s.is_empty() || s.contains('\0'))
+        {
+            bail!("Invalid container entrypoint");
+        }
+        Ok(())
+    }
+}
+
+pub fn project_key(id: &str) -> String {
+    id.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HealthCheck {
+    Http { path: String },
+    Tcp,
+}
+impl Default for HealthCheck {
+    fn default() -> Self {
+        Self::Http {
+            path: "/health".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceSpec {
+    pub id: String,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub executable: PathBuf,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub provider: Provider,
+    #[serde(default)]
+    pub container: Option<ContainerSpec>,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub health: HealthCheck,
+    #[serde(default = "default_working_dir")]
+    pub working_dir: PathBuf,
+}
+fn default_working_dir() -> PathBuf {
+    PathBuf::from(".")
+}
+impl ServiceSpec {
+    pub fn owner(&self, parent: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(parent.as_bytes());
+        hash.update([0]);
+        hash.update(self.id.as_bytes());
+        format!("{:x}", hash.finalize())
+    }
+    pub fn manifest(&self, parent: &Manifest) -> Result<Manifest> {
+        let root = parent
+            .root
+            .join(&self.working_dir)
+            .canonicalize()
+            .context("Service working directory unavailable")?;
+        if !root.starts_with(parent.root.canonicalize()?) {
+            bail!("Service working directory escapes project root");
+        }
+        let manifest = Manifest {
+            schema_version: 1,
+            id: self.owner(&parent.id),
+            name: format!("{} / {}", parent.name, self.id),
+            root,
+            executable: self.executable.clone(),
+            args: self.args.clone(),
+            provider: self.provider,
+            container: self.container.clone(),
+            port: self.port,
+            health: self.health.clone(),
+            services: vec![],
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -11,11 +156,20 @@ pub struct Manifest {
     pub id: String,
     pub name: String,
     pub root: PathBuf,
+    #[serde(default)]
     pub executable: PathBuf,
+    #[serde(default)]
+    pub provider: Provider,
+    #[serde(default)]
+    pub container: Option<ContainerSpec>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub port: u16,
+    #[serde(default)]
+    pub health: HealthCheck,
+    #[serde(default)]
+    pub services: Vec<ServiceSpec>,
 }
 
 impl Manifest {
@@ -38,13 +192,109 @@ impl Manifest {
         if !self.root.is_absolute() || !self.root.is_dir() {
             bail!("Project root must be an existing absolute directory");
         }
-        if !self.executable.is_absolute() || !self.executable.is_file() {
-            bail!("Executable must be an existing absolute file");
+        match self.provider {
+            Provider::Native => {
+                if !self.executable.is_absolute() || !self.executable.is_file() {
+                    bail!("Executable must be an existing absolute file");
+                }
+                if self.container.is_some() {
+                    bail!("Native projects cannot contain a container configuration");
+                }
+            }
+            Provider::Container => self
+                .container
+                .as_ref()
+                .context("Container configuration required")?
+                .validate()?,
         }
         if self.args.iter().any(|arg| arg.contains('\0')) {
             bail!("NUL is forbidden in arguments");
         }
+        if let HealthCheck::Http { path } = &self.health {
+            if !path.starts_with('/')
+                || path.starts_with("//")
+                || path.chars().any(char::is_control)
+            {
+                bail!("Invalid local healthcheck path");
+            }
+        }
+        for service in &self.services {
+            service.manifest(self)?;
+        }
+        self.service_order()?;
+        if self.provider == Provider::Container {
+            let engine = self
+                .container
+                .as_ref()
+                .context("Container configuration required")?
+                .engine;
+            for service in &self.services {
+                if service.provider != Provider::Container {
+                    bail!("Container-to-native dependency routing is not implemented");
+                }
+                if service
+                    .container
+                    .as_ref()
+                    .context("Service container configuration required")?
+                    .engine
+                    != engine
+                {
+                    bail!("Cross-engine container networking is not implemented");
+                }
+            }
+        }
         Ok(())
+    }
+    pub fn service_order(&self) -> Result<Vec<&ServiceSpec>> {
+        use std::collections::{BTreeMap, BTreeSet};
+        if self.services.len() > 32 {
+            bail!("A project may contain at most 32 auxiliary services");
+        }
+        let mut services = BTreeMap::new();
+        for service in &self.services {
+            if service.id.is_empty()
+                || service.id.len() > 32
+                || service.id == "app"
+                || !service
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            {
+                bail!("Invalid or reserved service id");
+            }
+            if services.insert(service.id.as_str(), service).is_some() {
+                bail!("Duplicate service id: {}", service.id);
+            }
+        }
+        fn visit<'a>(
+            id: &'a str,
+            services: &BTreeMap<&'a str, &'a ServiceSpec>,
+            active: &mut BTreeSet<&'a str>,
+            done: &mut BTreeSet<&'a str>,
+            out: &mut Vec<&'a ServiceSpec>,
+        ) -> Result<()> {
+            if done.contains(id) {
+                return Ok(());
+            }
+            if !active.insert(id) {
+                bail!("Dependency cycle at service {id}");
+            }
+            let service = services.get(id).context("Unresolved service dependency")?;
+            for dependency in &service.depends_on {
+                visit(dependency, services, active, done, out)?;
+            }
+            active.remove(id);
+            done.insert(id);
+            out.push(service);
+            Ok(())
+        }
+        let mut result = vec![];
+        let mut active = BTreeSet::new();
+        let mut done = BTreeSet::new();
+        for id in services.keys() {
+            visit(id, &services, &mut active, &mut done, &mut result)?;
+        }
+        Ok(result)
     }
     pub fn read(path: &Path) -> Result<Self> {
         let raw = std::fs::read(path).context("Read manifest")?;
@@ -54,7 +304,9 @@ impl Manifest {
         let mut value: Self = serde_json::from_slice(&raw)?;
         value.validate()?;
         value.root = value.root.canonicalize()?;
-        value.executable = value.executable.canonicalize()?;
+        if value.provider == Provider::Native {
+            value.executable = value.executable.canonicalize()?;
+        }
         Ok(value)
     }
 }
@@ -65,6 +317,7 @@ pub enum State {
     Stopped,
     Starting,
     Running,
+    Degraded,
     Stopping,
     Failed,
 }
@@ -76,6 +329,17 @@ pub struct Project {
     pub pid: Option<u32>,
     pub port: Option<u16>,
     pub error: Option<String>,
+    pub container_id: Option<String>,
+    pub services: Vec<ServiceStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceStatus {
+    pub id: String,
+    pub state: State,
+    pub pid: Option<u32>,
+    pub port: u16,
+    pub container_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +370,7 @@ pub struct Operation {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Command {
     Health,
+    Capabilities,
     List,
     Register { manifest_path: PathBuf },
     Start { id: String },
@@ -152,6 +417,51 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn manifest(services: serde_json::Value) -> Manifest {
+        serde_json::from_value(serde_json::json!({"schema_version":1,"id":"test","name":"test","root":std::env::current_dir().unwrap(),"executable":std::env::current_exe().unwrap(),"services":services})).unwrap()
+    }
+    #[test]
+    fn dependency_graph_rejects_cycles_missing_nodes_and_path_escape() {
+        let exe = std::env::current_exe().unwrap();
+        let valid = manifest(
+            serde_json::json!([{"id":"worker","executable":exe,"depends_on":["cache"]},{"id":"cache","executable":exe}]),
+        );
+        assert_eq!(
+            valid
+                .service_order()
+                .unwrap()
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cache", "worker"]
+        );
+        assert!(manifest(serde_json::json!([{"id":"a","executable":exe,"depends_on":["b"]},{"id":"b","executable":exe,"depends_on":["a"]}])).validate().is_err());
+        assert!(manifest(
+            serde_json::json!([{"id":"a","executable":exe,"depends_on":["missing"]}])
+        )
+        .validate()
+        .is_err());
+        assert!(
+            manifest(serde_json::json!([{"id":"a","executable":exe,"working_dir":".."}]))
+                .validate()
+                .is_err()
+        );
+    }
+    #[test]
+    fn requires_digest_and_nonzero_internal_port() {
+        let mut spec = ContainerSpec {
+            engine: ContainerEngine::Docker,
+            image: "redis:latest".into(),
+            internal_port: 6379,
+            command: vec![],
+            entrypoint: None,
+        };
+        assert!(spec.validate().is_err());
+        spec.image = format!("redis@sha256:{}", "a".repeat(64));
+        assert!(spec.validate().is_ok());
+        spec.internal_port = 0;
+        assert!(spec.validate().is_err());
+    }
     #[test]
     fn rejects_unsafe_ids_and_unknown_fields() {
         let m = Manifest {
@@ -160,6 +470,10 @@ mod tests {
             name: "test".into(),
             root: std::env::current_dir().unwrap(),
             executable: std::env::current_exe().unwrap(),
+            provider: Provider::Native,
+            container: None,
+            health: HealthCheck::default(),
+            services: vec![],
             args: vec![],
             port: 0,
         };

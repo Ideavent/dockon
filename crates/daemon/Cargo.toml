@@ -11,6 +11,7 @@ dockon-core.workspace = true
 dockon-ipc.workspace = true
 dockon-persistence.workspace = true
 dockon-orchestrator.workspace = true
+dockon-provider-container.workspace = true
 fs2 = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
@@ -20,3 +21,8 @@ path = "src/main.rs"
 [[bin]]
 name = "dockonctl"
 path = "src/ctl.rs"
+[[bin]]
+name = "dockon-runner"
+path = "src/runner.rs"
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

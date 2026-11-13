@@ -251,6 +251,30 @@ try {
   const persisted = await successful("list");
   assert.equal(persisted.length, 5);
   assert.ok(persisted.every((p) => p.state === "STOPPED"));
+  const crashProject = await successful("start", { id: "alpha" });
+  daemon.kill("SIGKILL");
+  await stopped(daemon);
+  let crashClean = false;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try {
+      await fetch(`http://127.0.0.1:${crashProject.port}/health`);
+    } catch {
+      crashClean = true;
+      break;
+    }
+    await pause(100);
+  }
+  assert.equal(
+    crashClean,
+    true,
+    "Native workload must stop after daemon death",
+  );
+  launch();
+  await ready();
+  assert.ok((await successful("list")).every((p) => p.state === "STOPPED"));
+  console.log(
+    "PASS native daemon crash cleanup without PID-based orphan killing",
+  );
   await successful("shutdown");
   await stopped(daemon);
   console.log(

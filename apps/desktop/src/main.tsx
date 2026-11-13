@@ -26,11 +26,20 @@ import { Button } from "./components/ui/button";
 import "./styles.css";
 
 type Project = {
-  manifest: { id: string; name: string; root: string; executable: string };
+  manifest: {
+    id: string;
+    name: string;
+    root: string;
+    executable: string;
+    provider?: "native" | "container";
+    health?: { type: "http" | "tcp" };
+  };
   state: string;
   pid: number | null;
   port: number | null;
   error: string | null;
+  container_id?: string | null;
+  services?: { id: string; state: string; port: number }[];
 };
 type Event = { seq: number; project_id: string; kind: string; message: string };
 type Operation = { id: string; status: string; error: string | null };
@@ -53,7 +62,7 @@ const words = {
     manifest: "Manifest dosyasının tam yolu",
     local: "Yerel çalışma alanı",
     noEvents: "Proje olayları burada görünecek.",
-    foundation: "Temel sürüm · Sprint 01",
+    foundation: "Geliştirme sürümü · Sprint 02",
     native: "Yerel süreç",
     open: "Tarayıcıda aç",
     cancel: "Vazgeç",
@@ -80,7 +89,7 @@ const words = {
     manifest: "Absolute path to manifest file",
     local: "Local workspace",
     noEvents: "Project events will appear here.",
-    foundation: "Foundation · Sprint 01",
+    foundation: "Development · Sprint 02",
     native: "Native process",
     open: "Open in browser",
     cancel: "Cancel",
@@ -180,7 +189,7 @@ function App() {
     }) => {
       const reply = await request<Operation>(method, params);
       if (method === "start" || method === "stop") {
-        for (let attempt = 0; attempt < 200; attempt++) {
+        for (let attempt = 0; attempt < 1800; attempt++) {
           const operation = await request<Operation>("operation", {
             id: reply.id,
           });
@@ -315,7 +324,15 @@ function App() {
             </div>
             <div>
               <span>PROVIDER</span>
-              <strong className="stat-word">{t.native}</strong>
+              <strong className="stat-word">
+                {items.some(
+                  (p) =>
+                    p.manifest.provider === "container" ||
+                    p.services?.some((s) => s.id),
+                )
+                  ? "Hybrid"
+                  : t.native}
+              </strong>
               <Box size={20} />
             </div>
           </section>
@@ -339,23 +356,41 @@ function App() {
                 </div>
                 <h2>{project.manifest.name}</h2>
                 <p className="project-path" title={project.manifest.root}>
-                  {project.manifest.root}
+                  {project.manifest.root.replace(/^\\\\\?\\/, "")}
                 </p>
                 <div className="project-meta">
                   <span>
                     <Box size={13} />
-                    native
+                    {project.manifest.provider || "native"}
                   </span>
-                  <span>PID {project.pid ?? "—"}</span>
+                  <span>
+                    {project.container_id
+                      ? project.container_id.slice(0, 10)
+                      : `PID ${project.pid ?? "—"}`}
+                  </span>
                   <span>:{project.port ?? "—"}</span>
                 </div>
+                {!!project.services?.length && (
+                  <div className="service-list">
+                    {project.services.map((service) => (
+                      <div key={service.id}>
+                        <span>{service.id}</span>
+                        <span>
+                          {service.state} · :{service.port}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {project.error && (
                   <p className="project-error">{project.error}</p>
                 )}
                 <div className="card-actions">
                   <Button
                     variant={
-                      project.state === "RUNNING" ? "secondary" : "primary"
+                      ["RUNNING", "DEGRADED"].includes(project.state)
+                        ? "secondary"
+                        : "primary"
                     }
                     disabled={
                       projects.isError ||
@@ -365,29 +400,35 @@ function App() {
                     }
                     onClick={() =>
                       action.mutate({
-                        method: project.state === "RUNNING" ? "stop" : "start",
+                        method: ["RUNNING", "DEGRADED"].includes(project.state)
+                          ? "stop"
+                          : "start",
                         params: { id: project.manifest.id },
                       })
                     }
                   >
-                    {project.state === "RUNNING" ? (
+                    {["RUNNING", "DEGRADED"].includes(project.state) ? (
                       <Square size={13} />
                     ) : (
                       <Play size={13} />
                     )}{" "}
-                    {project.state === "RUNNING" ? t.stop : t.start}
+                    {["RUNNING", "DEGRADED"].includes(project.state)
+                      ? t.stop
+                      : t.start}
                   </Button>
-                  {project.port && project.state === "RUNNING" && (
-                    <a
-                      className="open-link"
-                      href={`http://127.0.0.1:${project.port}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label={t.open}
-                    >
-                      <ArrowUpRight size={18} />
-                    </a>
-                  )}
+                  {project.port &&
+                    project.state === "RUNNING" &&
+                    project.manifest.health?.type !== "tcp" && (
+                      <a
+                        className="open-link"
+                        href={`http://127.0.0.1:${project.port}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={t.open}
+                      >
+                        <ArrowUpRight size={18} />
+                      </a>
+                    )}
                 </div>
               </article>
             ))}

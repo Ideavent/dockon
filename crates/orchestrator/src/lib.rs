@@ -1,18 +1,22 @@
+mod ports;
+mod workload;
 use anyhow::{bail, Context, Result};
-use dockon_core::{Event, EventBatch, Manifest, Operation, Project, State};
+use dockon_core::{
+    Event, EventBatch, Manifest, Operation, Project, Provider, ServiceStatus, State,
+};
 use dockon_persistence::Store;
-use dockon_provider_native::Instance;
+use dockon_provider_container::ContainerProvider;
+use ports::PortAllocator;
 use std::{
     collections::{BTreeMap, VecDeque},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
-use tokio::{
-    io::{AsyncRead, BufReader},
-    sync::{Mutex, RwLock},
-};
+use tokio::sync::{Mutex, RwLock};
+use workload::{launch, OwnedInstance};
 
 pub struct Events {
     seq: u64,
@@ -38,25 +42,19 @@ impl Events {
             kind: kind.into(),
             message: message.chars().take(1024).collect(),
         });
-        // Bound encoded IPC reply below the 1 MiB frame limit, including Unicode.
         while self.entries.len() > 100 {
             self.entries.pop_front();
         }
     }
-    pub fn after(&self, seq: u64) -> Vec<Event> {
-        self.entries
-            .iter()
-            .filter(|e| seq > self.seq || e.seq > seq)
-            .cloned()
-            .collect()
-    }
-    pub fn epoch(&self) -> &str {
-        &self.epoch
-    }
     pub fn batch(&self, after: u64) -> EventBatch {
         EventBatch {
             epoch: self.epoch.clone(),
-            events: self.after(after),
+            events: self
+                .entries
+                .iter()
+                .filter(|e| after > self.seq || e.seq > after)
+                .cloned()
+                .collect(),
             truncated: self
                 .entries
                 .front()
@@ -64,9 +62,17 @@ impl Events {
         }
     }
 }
+struct OwnedService {
+    status: ServiceStatus,
+    owner: String,
+    provider: Provider,
+    internal_port: u16,
+    instance: OwnedInstance,
+}
 struct Entry {
     project: RwLock<Project>,
-    instance: Mutex<Option<Instance>>,
+    instance: Mutex<Option<OwnedInstance>>,
+    services: Mutex<Vec<OwnedService>>,
     lifecycle: Mutex<()>,
 }
 impl Entry {
@@ -78,8 +84,11 @@ impl Entry {
                 pid: None,
                 port: None,
                 error: None,
+                container_id: None,
+                services: vec![],
             }),
             instance: Mutex::new(None),
+            services: Mutex::new(vec![]),
             lifecycle: Mutex::new(()),
         }
     }
@@ -89,21 +98,59 @@ pub struct Orchestrator {
     store: Store,
     pub events: EventBus,
     closing: AtomicBool,
+    containers: ContainerProvider,
+    data_dir: PathBuf,
+    ports: PortAllocator,
 }
 impl Orchestrator {
-    pub async fn new(store: Store) -> Result<Self> {
+    pub async fn new(store: Store, data_dir: PathBuf) -> Result<Self> {
+        let identity = data_dir.join("installation.id");
+        let installation = if identity.is_file() {
+            std::fs::read_to_string(identity)?
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            std::fs::write(identity, &id)?;
+            id
+        };
+        let containers = ContainerProvider::new(installation)?;
         let mut entries = BTreeMap::new();
         for manifest in store.list().await? {
-            // Recovery is deliberately non-autostart. OS ownership cleanup is
-            // reconciled separately from the last persisted desired state.
-            store.desired(&manifest.id, false).await?;
-            entries.insert(manifest.id.clone(), Arc::new(Entry::new(manifest)));
+            let mut engines = vec![];
+            if let Some(spec) = &manifest.container {
+                engines.push(spec.engine);
+            }
+            for service in &manifest.services {
+                if let Some(spec) = &service.container {
+                    if !engines.contains(&spec.engine) {
+                        engines.push(spec.engine);
+                    }
+                }
+            }
+            let mut recovery_error = None;
+            for engine in engines {
+                if let Err(error) = containers.reconcile(engine, &manifest.id).await {
+                    recovery_error = Some(format!("Recovery requires provider: {error:#}"));
+                }
+            }
+            let id = manifest.id.clone();
+            let entry = Arc::new(Entry::new(manifest));
+            if let Some(error) = recovery_error {
+                let mut project = entry.project.write().await;
+                project.state = State::Failed;
+                project.error = Some(error);
+            } else {
+                store.desired(&id, false).await?;
+            }
+            entries.insert(id, entry);
         }
         Ok(Self {
             entries: RwLock::new(entries),
             store,
             events: Arc::default(),
             closing: AtomicBool::new(false),
+            containers,
+            data_dir,
+            ports: PortAllocator::default(),
         })
     }
     async fn entry(&self, id: &str) -> Result<Arc<Entry>> {
@@ -132,25 +179,58 @@ impl Orchestrator {
     }
     pub async fn list(&self) -> Result<Vec<Project>> {
         let entries: Vec<_> = self.entries.read().await.values().cloned().collect();
-        let mut result = Vec::new();
+        let mut result = vec![];
         for entry in entries {
-            if let Ok(_lifecycle) = entry.lifecycle.try_lock() {
+            if let Ok(_guard) = entry.lifecycle.try_lock() {
                 let mut owned = entry.instance.lock().await;
                 if let Some(instance) = owned.as_mut() {
-                    if let Some(status) = instance.child.try_wait()? {
-                        let mut project = entry.project.write().await;
-                        project.state = State::Failed;
-                        project.pid = None;
-                        project.port = None;
-                        project.error = Some(format!("Process exited: {status}"));
-                        *owned = None;
-                        self.events.lock().await.push(
-                            &project.manifest.id,
-                            "state",
-                            "FAILED: process exited",
-                        );
+                    match instance.running().await {
+                        Ok(true) => {}
+                        outcome => {
+                            let mut project = entry.project.write().await;
+                            let state = if outcome.is_err() {
+                                State::Degraded
+                            } else {
+                                State::Failed
+                            };
+                            if project.state != state {
+                                self.events.lock().await.push(
+                                    &project.manifest.id,
+                                    "state",
+                                    if state == State::Failed {
+                                        "FAILED: workload exited"
+                                    } else {
+                                        "DEGRADED: provider unavailable"
+                                    },
+                                );
+                            }
+                            project.state = state;
+                            project.error = Some(match outcome {
+                                Err(error) => format!("{error:#}"),
+                                _ => "Managed workload exited".into(),
+                            });
+                            if state == State::Failed {
+                                project.pid = None;
+                                project.port = None;
+                            }
+                        }
                     }
                 }
+                let mut services = entry.services.lock().await;
+                for service in services.iter_mut() {
+                    let health = service.instance.running().await;
+                    if !matches!(health, Ok(true)) {
+                        service.status.state = State::Failed;
+                        let mut project = entry.project.write().await;
+                        if project.state == State::Running {
+                            project.state = State::Degraded;
+                            project.error =
+                                Some(format!("Service {} unavailable", service.status.id));
+                        }
+                    }
+                }
+                entry.project.write().await.services =
+                    services.iter().map(|s| s.status.clone()).collect();
             }
             result.push(entry.project.read().await.clone());
         }
@@ -179,8 +259,19 @@ impl Orchestrator {
             } else {
                 state.stop_entry(&entry).await
             };
-            let error = result.err().map(|e| format!("{e:#}"));
+            let mut error = result.err().map(|e| format!("{e:#}"));
+            if error.is_some() && start {
+                if let Err(cleanup) = state.stop_entry(&entry).await {
+                    error = Some(format!(
+                        "{}; cleanup failed: {cleanup:#}",
+                        error.unwrap_or_default()
+                    ));
+                }
+            }
             if let Some(message) = &error {
+                if start {
+                    let _ = state.store.desired(&id, false).await;
+                }
                 let mut project = entry.project.write().await;
                 project.state = State::Failed;
                 project.error = Some(message.clone());
@@ -200,52 +291,155 @@ impl Orchestrator {
         self.store.operation(id).await
     }
     async fn start_entry(&self, entry: &Entry) -> Result<()> {
-        let mut owned = entry.instance.lock().await;
-        if let Some(instance) = owned.as_mut() {
-            if instance.child.try_wait()?.is_none() {
-                return Ok(());
+        {
+            let mut owned = entry.instance.lock().await;
+            if let Some(instance) = owned.as_mut() {
+                if instance.running().await? {
+                    return Ok(());
+                }
+                let id = entry.project.read().await.manifest.id.clone();
+                instance.stop(&id).await?;
+                *owned = None;
             }
-            *owned = None;
         }
+        self.stop_services(entry).await?;
         let manifest = {
             let mut project = entry.project.write().await;
             project.state = State::Starting;
             project.pid = None;
             project.port = None;
+            project.container_id = None;
             project.error = None;
             project.manifest.clone()
         };
+        // Validate all service paths/DAG before creating any process or resource.
+        manifest.validate()?;
+        self.store.desired(&manifest.id, true).await?;
         self.events
             .lock()
             .await
             .push(&manifest.id, "state", "STARTING");
-        self.store.desired(&manifest.id, true).await?;
-        let (instance, port) = start_instance(&manifest, self.events.clone()).await?;
+        let data = self
+            .data_dir
+            .join("instances")
+            .join(dockon_core::project_key(&manifest.id));
+        std::fs::create_dir_all(&data)?;
+        {
+            let mut services = entry.services.lock().await;
+            for service in manifest.service_order()? {
+                self.events.lock().await.push(
+                    &manifest.id,
+                    "service",
+                    &format!("Starting service {}", service.id),
+                );
+                let child = service.manifest(&manifest)?;
+                let child_data = data
+                    .join("services")
+                    .join(dockon_core::project_key(&service.id));
+                std::fs::create_dir_all(&child_data)?;
+                let selected: Vec<_> = services
+                    .iter()
+                    .filter(|s| service.depends_on.contains(&s.status.id))
+                    .collect();
+                let environment = service_environment(selected.into_iter(), service.provider)?;
+                let (instance, port) = launch(
+                    &child,
+                    self.events.clone(),
+                    (&self.containers, &self.ports),
+                    &child_data,
+                    &manifest.id,
+                    &service.id,
+                    &environment,
+                )
+                .await?;
+                let status = ServiceStatus {
+                    id: service.id.clone(),
+                    state: State::Running,
+                    pid: instance.pid(),
+                    port,
+                    container_id: instance.container_id(),
+                };
+                services.push(OwnedService {
+                    status,
+                    owner: child.id,
+                    provider: service.provider,
+                    internal_port: service.container.as_ref().map_or(port, |c| c.internal_port),
+                    instance,
+                });
+                entry.project.write().await.services =
+                    services.iter().map(|s| s.status.clone()).collect();
+                self.events.lock().await.push(
+                    &manifest.id,
+                    "service",
+                    &format!("Service {} ready", service.id),
+                );
+            }
+        }
+        let environment =
+            service_environment(entry.services.lock().await.iter(), manifest.provider)?;
+        let app_data = data.join("app");
+        std::fs::create_dir_all(&app_data)?;
+        let (instance, port) = launch(
+            &manifest,
+            self.events.clone(),
+            (&self.containers, &self.ports),
+            &app_data,
+            &manifest.id,
+            "app",
+            &environment,
+        )
+        .await?;
         let mut project = entry.project.write().await;
-        project.pid = instance.child.id();
+        project.pid = instance.pid();
+        project.container_id = instance.container_id();
         project.port = Some(port);
         project.state = State::Running;
-        *owned = Some(instance);
+        *entry.instance.lock().await = Some(instance);
         self.events
             .lock()
             .await
             .push(&manifest.id, "state", "RUNNING");
         Ok(())
     }
+    async fn stop_services(&self, entry: &Entry) -> Result<()> {
+        let mut services = entry.services.lock().await;
+        let mut errors = vec![];
+        for service in services.iter_mut().rev() {
+            if let Err(error) = service.instance.stop(&service.owner).await {
+                errors.push(format!("{}: {error:#}", service.status.id));
+            } else {
+                service.status.state = State::Stopped;
+            }
+        }
+        services.retain(|s| s.status.state != State::Stopped);
+        entry.project.write().await.services = services.iter().map(|s| s.status.clone()).collect();
+        if !errors.is_empty() {
+            bail!("Service cleanup failed: {}", errors.join("; "));
+        }
+        Ok(())
+    }
     async fn stop_entry(&self, entry: &Entry) -> Result<()> {
-        let mut owned = entry.instance.lock().await;
         let id = entry.project.read().await.manifest.id.clone();
         self.store.desired(&id, false).await?;
-        if let Some(instance) = owned.as_mut() {
-            entry.project.write().await.state = State::Stopping;
-            self.events.lock().await.push(&id, "state", "STOPPING");
-            instance.stop(&id).await?;
-            *owned = None;
+        entry.project.write().await.state = State::Stopping;
+        #[cfg(windows)]
+        if entry.project.read().await.manifest.provider == Provider::Native {
+            self.events.lock().await.push(&id,"warning","Windows native stop terminates the owned Job Object; graceful signals are unavailable for this launch profile");
         }
+        self.events.lock().await.push(&id, "state", "STOPPING");
+        {
+            let mut owned = entry.instance.lock().await;
+            if let Some(instance) = owned.as_mut() {
+                instance.stop(&id).await?;
+                *owned = None;
+            }
+        }
+        self.stop_services(entry).await?;
         let mut project = entry.project.write().await;
         project.state = State::Stopped;
         project.pid = None;
         project.port = None;
+        project.container_id = None;
         project.error = None;
         self.events.lock().await.push(&id, "state", "STOPPED");
         Ok(())
@@ -256,84 +450,32 @@ impl Orchestrator {
             self.closing.store(true, Ordering::Release);
             entries.values().cloned().collect()
         };
+        let mut errors = vec![];
         for entry in entries {
             let _guard = entry.lifecycle.lock().await;
-            self.stop_entry(&entry).await?;
+            if let Err(error) = self.stop_entry(&entry).await {
+                errors.push(format!("{error:#}"));
+            }
+        }
+        if !errors.is_empty() {
+            bail!("Shutdown cleanup failed: {}", errors.join("; "));
         }
         Ok(())
     }
 }
-async fn start_instance(manifest: &Manifest, events: EventBus) -> Result<(Instance, u16)> {
-    manifest.validate()?;
-    let reserved =
-        std::net::TcpListener::bind(("127.0.0.1", manifest.port)).context("Port unavailable")?;
-    let port = reserved.local_addr()?.port();
-    drop(reserved);
-    let mut instance = Instance::spawn(manifest, port)?;
-    if let Some(stdout) = instance.child.stdout.take() {
-        capture(stdout, manifest.id.clone(), "stdout", events.clone());
+fn service_environment<'a>(
+    services: impl Iterator<Item = &'a OwnedService>,
+    consumer: Provider,
+) -> Result<BTreeMap<String, String>> {
+    let mut endpoints = BTreeMap::new();
+    for service in services {
+        if consumer == Provider::Container && service.provider == Provider::Native {
+            bail!("Container-to-native service routing is not implemented; choose a native application or container dependency");
+        }
+        endpoints.insert(service.status.id.clone(),serde_json::json!({"host":if consumer==Provider::Container{service.status.id.as_str()}else{"127.0.0.1"},"port":if consumer==Provider::Container{service.internal_port}else{service.status.port}}));
     }
-    if let Some(stderr) = instance.child.stderr.take() {
-        capture(stderr, manifest.id.clone(), "stderr", events);
-    }
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_millis(300))
-        .build()?;
-    for _ in 0..60 {
-        if let Some(status) = instance.child.try_wait()? {
-            bail!("Process exited before readiness: {status}");
-        }
-        if let Ok(response) = client
-            .get(format!("http://127.0.0.1:{port}/health"))
-            .send()
-            .await
-        {
-            if response.status().is_success() {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if instance.child.try_wait()?.is_none() {
-                    return Ok((instance, port));
-                }
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    instance.stop(&manifest.id).await?;
-    bail!("HTTP readiness timed out; child stopped")
-}
-fn capture(
-    stream: impl AsyncRead + Unpin + Send + 'static,
-    id: String,
-    kind: &'static str,
-    events: EventBus,
-) {
-    tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut reader = BufReader::new(stream);
-        let mut buffer = Vec::new();
-        loop {
-            let mut byte = [0u8; 1];
-            match reader.read(&mut byte).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if byte[0] == b'\n' || buffer.len() == 2048 {
-                        events
-                            .lock()
-                            .await
-                            .push(&id, kind, &String::from_utf8_lossy(&buffer));
-                        buffer.clear();
-                    }
-                    if byte[0] != b'\n' {
-                        buffer.push(byte[0]);
-                    }
-                }
-            }
-        }
-        if !buffer.is_empty() {
-            events
-                .lock()
-                .await
-                .push(&id, kind, &String::from_utf8_lossy(&buffer));
-        }
-    });
+    Ok(BTreeMap::from([(
+        "DOCKON_SERVICES".into(),
+        serde_json::to_string(&endpoints)?,
+    )]))
 }

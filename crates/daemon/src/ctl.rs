@@ -6,6 +6,7 @@ async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let command = match args.first().map(String::as_str) {
         Some("health") => Command::Health,
+        Some("capabilities") => Command::Capabilities,
         Some("list") => Command::List,
         Some("register") => Command::Register {
             manifest_path: args.get(1).context("Manifest path required")?.into(),

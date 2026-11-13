@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
     lock.try_lock_exclusive()
         .map_err(|_| anyhow::anyhow!("Dockon daemon is already running"))?;
     let store = dockon_persistence::Store::open(&dir.join("dockon.sqlite")).await?;
-    let orchestrator = Orchestrator::new(store).await?;
+    let orchestrator = Orchestrator::new(store, dir.clone()).await?;
     let events = orchestrator.events.clone();
     let state = Arc::new(orchestrator);
     let shutdown = Arc::new(Notify::new());
@@ -119,7 +119,11 @@ async fn serve(
     }
     let response: Result<Response> = async {
         Ok(match request.command {
-            Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"sample_http", "container":"not_implemented", "ai":"not_implemented"})),
+            Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"http_tcp", "container":"digest_pinned_http_tcp", "ai":"not_implemented"})),
+            Command::Capabilities => {
+                let (docker,podman)=tokio::join!(dockon_provider_container::capability(dockon_core::ContainerEngine::Docker),dockon_provider_container::capability(dockon_core::ContainerEngine::Podman));
+                Response::success(serde_json::json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"native":"http","docker":docker,"podman":podman,"ai":"not_implemented"}))
+            },
             Command::List => Response::success(state.list().await?),
             Command::Register { manifest_path } => Response::success(state.register(Manifest::read(&manifest_path)?).await?),
             Command::Start { id } => Response::success(state.submit(id, true).await?),
