@@ -2,4 +2,5 @@
 *.png binary
 *.ico binary
 *.icns binary
+*.der binary
 *.md whitespace=-blank-at-eol

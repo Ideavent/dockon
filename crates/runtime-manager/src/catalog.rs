@@ -79,7 +79,7 @@ pub async fn versions(http: &Transport, runtime: &str) -> Result<(Vec<Version>, 
             }versions.into_values().collect()
         }
         "go"=>{let index:Vec<Value>=http.json("https://go.dev/dl/?mode=json&include=all").await?;index.into_iter().filter(|v|v["stable"].as_bool()==Some(true)).filter_map(|v|Some(Version{version:v["version"].as_str()?.trim_start_matches("go").into(),support:"publisher_release".into()})).collect()}
-        "caddy"=>{let release:Value=http.json("https://api.github.com/repos/caddyserver/caddy/releases/latest").await?;vec![Version{version:release["tag_name"].as_str().context("Missing Caddy version")?.trim_start_matches('v').into(),support:"publisher_release".into()}]}
+        "caddy"=>{let release=http.response("https://github.com/caddyserver/caddy/releases/latest").await?;let version=release.url().as_str().strip_prefix("https://github.com/caddyserver/caddy/releases/tag/v").context("Unexpected Caddy release redirect")?;semver::Version::parse(version)?;vec![Version{version:version.into(),support:"publisher_release".into()}]}
         _=>return Ok((vec![],Some("Managed downloads are not implemented for this runtime; explicit system runtime import is available for supported executable profiles".into())))
     };
     result.sort_by_key(|value| std::cmp::Reverse(version_key(&value.version)));
@@ -258,14 +258,6 @@ pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<
         }
         "caddy" => {
             semver::Version::parse(version)?;
-            let release: Value = http
-                .json(&format!(
-                    "https://api.github.com/repos/caddyserver/caddy/releases/tags/v{version}"
-                ))
-                .await?;
-            let assets = release["assets"]
-                .as_array()
-                .context("Missing Caddy assets")?;
             let caddy_os = if os == "darwin" {
                 "mac"
             } else if os == "win" {
@@ -275,29 +267,12 @@ pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<
             };
             let caddy_arch = if arch == "x64" { "amd64" } else { arch };
             let filename = format!("caddy_{version}_{caddy_os}_{caddy_arch}.{}", value.format);
-            let file = assets
-                .iter()
-                .find(|a| a["name"].as_str() == Some(&filename))
-                .context("Caddy binary unavailable on this platform")?;
-            let sums = assets
-                .iter()
-                .find(|a| {
-                    a["name"]
-                        .as_str()
-                        .is_some_and(|n| n.ends_with("checksums.txt"))
-                })
-                .context("Caddy checksum manifest unavailable")?;
-            value.url = file["browser_download_url"]
-                .as_str()
-                .context("Missing Caddy URL")?
-                .into();
+            let release =
+                format!("https://github.com/caddyserver/caddy/releases/download/v{version}");
+            value.url = format!("{release}/{filename}");
             value.hash = checksum(
                 &http
-                    .text(
-                        sums["browser_download_url"]
-                            .as_str()
-                            .context("Missing Caddy checksums URL")?,
-                    )
+                    .text(&format!("{release}/caddy_{version}_checksums.txt"))
                     .await?,
                 &filename,
             )?;

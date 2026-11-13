@@ -504,7 +504,11 @@ fn find(
 #[cfg(windows)]
 fn platform_trusted(der: &[u8]) -> Result<bool> {
     let store = RootStore::open()?;
-    let context = find(&store, der)?;
+    store_trusted(&store, der)
+}
+#[cfg(windows)]
+fn store_trusted(store: &RootStore, der: &[u8]) -> Result<bool> {
+    let context = find(store, der)?;
     if context.is_null() {
         return Ok(false);
     }
@@ -519,10 +523,14 @@ fn platform_trusted(der: &[u8]) -> Result<bool> {
 }
 #[cfg(windows)]
 fn platform_set_trust(der: &[u8], trust: bool) -> Result<()> {
-    use windows_sys::Win32::Security::Cryptography::*;
     let store = RootStore::open()?;
+    store_set_trust(&store, der, trust)
+}
+#[cfg(windows)]
+fn store_set_trust(store: &RootStore, der: &[u8], trust: bool) -> Result<()> {
+    use windows_sys::Win32::Security::Cryptography::*;
     if trust {
-        if platform_trusted(der)? {
+        if store_trusted(store, der)? {
             return Ok(());
         }
         if unsafe {
@@ -539,7 +547,7 @@ fn platform_set_trust(der: &[u8], trust: bool) -> Result<()> {
             return Err(std::io::Error::last_os_error().into());
         }
     } else {
-        let context = find(&store, der)?;
+        let context = find(store, der)?;
         if !context.is_null() {
             let exact = unsafe {
                 std::slice::from_raw_parts(
@@ -572,6 +580,31 @@ fn platform_set_trust(_der: &[u8], _trust: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(windows)]
+    fn native_certificate_operations_use_an_isolated_memory_store() {
+        use windows_sys::Win32::Security::Cryptography::*;
+        // This native store is in memory, never the user's or machine's ROOT store.
+        let handle = unsafe {
+            CertOpenStore(
+                CERT_STORE_PROV_MEMORY,
+                0,
+                0,
+                CERT_STORE_CREATE_NEW_FLAG,
+                std::ptr::null(),
+            )
+        };
+        assert!(!handle.is_null());
+        let store = RootStore(handle);
+        let der = include_bytes!("../testdata/public-ca.der");
+        assert!(!store_trusted(&store, der).unwrap());
+        store_set_trust(&store, der, true).unwrap();
+        assert!(store_trusted(&store, der).unwrap());
+        store_set_trust(&store, der, true).unwrap();
+        store_set_trust(&store, der, false).unwrap();
+        assert!(!store_trusted(&store, der).unwrap());
+        store_set_trust(&store, der, false).unwrap();
+    }
     #[test]
     fn scoped_write_backs_up_and_rejects_a_stale_preview() {
         let directory =

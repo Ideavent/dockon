@@ -1,0 +1,1 @@
+This fixture contains one public CA certificate generated for Dockon integration tests. It contains no private key. Native Windows add/find/remove tests use it exclusively in a disposable in-memory certificate store; it is never added to a system or user trust store.
