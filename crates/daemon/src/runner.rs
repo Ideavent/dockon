@@ -33,7 +33,9 @@ async fn main() -> anyhow::Result<()> {
     {
         return Err(std::io::Error::last_os_error().into());
     }
-    let parent = tokio::io::unix::AsyncFd::new(pipe)?;
+    // SAFETY: this File exclusively owns the descriptor; it is never replaced
+    // or closed while registered with AsyncFd.
+    let parent = unsafe { tokio::io::unix::AsyncFd::register(pipe)? };
     let early = tokio::select! {
         status=child.wait()=>Some(status?),
         _=parent_closed(&parent)=>None,

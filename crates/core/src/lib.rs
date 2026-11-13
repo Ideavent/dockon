@@ -57,6 +57,14 @@ impl ContainerSpec {
         if self.internal_port == 0 {
             bail!("Container internal port must be nonzero");
         }
+        if self.engine == ContainerEngine::Podman {
+            let registry = image.split('/').next().unwrap_or_default();
+            if !image.contains('/')
+                || !(registry.contains('.') || registry.contains(':') || registry == "localhost")
+            {
+                bail!("Podman requires an explicit image registry");
+            }
+        }
         if self.command.iter().any(|s| s.contains('\0')) {
             bail!("NUL is forbidden in container arguments");
         }

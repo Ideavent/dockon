@@ -41,6 +41,32 @@ async fn request(command: dockon_core::Command) -> Result<dockon_core::Response,
 }
 
 #[tauri::command]
+async fn open_project(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let response = dockon_ipc::call(dockon_core::Command::List)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.ok {
+        return Err(response.error.unwrap_or_default());
+    }
+    let projects: Vec<dockon_core::Project> =
+        serde_json::from_value(response.data).map_err(|e| e.to_string())?;
+    let project = projects
+        .into_iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or("Unknown project")?;
+    if project.state != dockon_core::State::Running
+        || matches!(project.manifest.health, dockon_core::HealthCheck::Tcp)
+    {
+        return Err("Project does not have a ready HTTP endpoint".into());
+    }
+    let port = project.port.ok_or("Project port unavailable")?;
+    app.opener()
+        .open_url(format!("http://127.0.0.1:{port}"), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn connect() -> Result<dockon_core::Response, String> {
     if let Ok(response) = dockon_ipc::call(dockon_core::Command::Health).await {
         return Ok(response);
@@ -83,12 +109,14 @@ async fn connect() -> Result<dockon_core::Response, String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(EventStream::default())
         .invoke_handler(tauri::generate_handler![
             request,
             connect,
             watch_events,
-            stop_events
+            stop_events,
+            open_project
         ])
         .run(tauri::generate_context!())
         .expect("Dockon desktop failed");

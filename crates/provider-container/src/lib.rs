@@ -14,6 +14,7 @@ pub struct Capability {
     pub engine: ContainerEngine,
     pub available: bool,
     pub detail: String,
+    pub experimental: bool,
 }
 
 pub async fn capability(engine: ContainerEngine) -> Capability {
@@ -22,7 +23,11 @@ pub async fn capability(engine: ContainerEngine) -> Capability {
         &[
             "info".into(),
             "--format".into(),
-            "{{json .ServerVersion}}".into(),
+            if engine == ContainerEngine::Docker {
+                "{{json .ServerVersion}}".into()
+            } else {
+                "json".into()
+            },
         ],
         8,
     )
@@ -31,12 +36,18 @@ pub async fn capability(engine: ContainerEngine) -> Capability {
         Ok(detail) => Capability {
             engine,
             available: true,
-            detail: detail.trim().to_owned(),
+            detail: if engine == ContainerEngine::Docker {
+                detail.trim().to_owned()
+            } else {
+                "Podman engine responded; execution profile is experimental".into()
+            },
+            experimental: engine == ContainerEngine::Podman,
         },
         Err(error) => Capability {
             engine,
             available: false,
             detail: format!("{error:#}"),
+            experimental: engine == ContainerEngine::Podman,
         },
     }
 }
@@ -149,15 +160,26 @@ impl ContainerProvider {
             "--cap-drop".into(),
             "ALL".into(),
             "--security-opt".into(),
-            "no-new-privileges:true".into(),
+            if spec.engine == ContainerEngine::Docker {
+                "no-new-privileges:true".into()
+            } else {
+                "no-new-privileges".into()
+            },
             "--read-only".into(),
             "--pids-limit".into(),
             "256".into(),
             "--log-opt".into(),
             "max-size=5m".into(),
-            "--log-opt".into(),
-            "max-file=2".into(),
         ];
+        if spec.engine == ContainerEngine::Docker {
+            args.extend(["--log-opt".into(), "max-file=2".into()]);
+        }
+        args.extend([
+            "--env".into(),
+            format!("PORT={}", spec.internal_port),
+            "--env".into(),
+            "HOST=0.0.0.0".into(),
+        ]);
         for (key, value) in environment {
             args.push("--env".into());
             args.push(format!("{key}={value}"));

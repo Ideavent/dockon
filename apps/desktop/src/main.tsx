@@ -425,6 +425,14 @@ function App() {
                         target="_blank"
                         rel="noreferrer"
                         aria-label={t.open}
+                        onClick={(event) => {
+                          if (desktop) {
+                            event.preventDefault();
+                            invoke("open_project", {
+                              id: project.manifest.id,
+                            }).catch((error) => setError(String(error)));
+                          }
+                        }}
                       >
                         <ArrowUpRight size={18} />
                       </a>
