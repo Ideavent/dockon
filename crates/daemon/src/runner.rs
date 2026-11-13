@@ -4,10 +4,8 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     use anyhow::Context;
-    use tokio::{
-        io::AsyncReadExt,
-        signal::unix::{signal, SignalKind},
-    };
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use tokio::signal::unix::{signal, SignalKind};
     let mut args = std::env::args_os().skip(1);
     let executable = args
         .next()
@@ -22,11 +20,23 @@ async fn main() -> anyhow::Result<()> {
         .kill_on_drop(true);
     let mut child = command.spawn()?;
     let group = child.id().context("Child PID unavailable")? as i32;
-    let mut parent = tokio::io::stdin();
-    let mut byte = [0u8; 1];
+    // AsyncFd avoids an uncancellable blocking stdin read keeping the Tokio
+    // runtime alive after the application has already exited.
+    let fd = unsafe { libc::dup(libc::STDIN_FILENO) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let pipe = unsafe { std::fs::File::from_raw_fd(fd) };
+    let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0
+        || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let parent = tokio::io::unix::AsyncFd::new(pipe)?;
     let early = tokio::select! {
         status=child.wait()=>Some(status?),
-        _=parent.read(&mut byte)=>None,
+        _=parent_closed(&parent)=>None,
         _=term.recv()=>None,
         _=interrupt.recv()=>None,
     };
@@ -56,6 +66,22 @@ async fn main() -> anyhow::Result<()> {
         let _ = child.wait().await?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+async fn parent_closed(pipe: &tokio::io::unix::AsyncFd<std::fs::File>) -> std::io::Result<()> {
+    use std::io::Read;
+    loop {
+        let mut ready = pipe.readable().await?;
+        match ready.try_io(|inner| {
+            let mut byte = [0u8; 1];
+            let _ = inner.get_ref().read(&mut byte)?;
+            Ok(())
+        }) {
+            Ok(result) => return result,
+            Err(_) => continue,
+        }
+    }
 }
 
 #[cfg(not(unix))]
