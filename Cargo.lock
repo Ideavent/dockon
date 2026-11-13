@@ -818,6 +818,8 @@ dependencies = [
  "dockon-core",
  "serde_json",
  "sqlx",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

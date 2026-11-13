@@ -102,6 +102,21 @@ async fn serve(
         .await?;
         return Ok(());
     }
+    if let Command::Subscribe { after } = request.command {
+        let mut cursor = after;
+        loop {
+            let batch = events.lock().await.batch(cursor);
+            if let Some(last) = batch.events.last() {
+                cursor = last.seq;
+            }
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                write_json(&mut stream, &Response::success(batch)),
+            )
+            .await??;
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
     let response: Result<Response> = async {
         Ok(match request.command {
             Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"sample_http", "container":"not_implemented", "ai":"not_implemented"})),
@@ -112,8 +127,9 @@ async fn serve(
             Command::Operation { id } => Response::success(state.operation(&id).await?),
             Command::Events { after } => {
                 let feed = events.lock().await;
-                Response::success(serde_json::json!({"epoch":feed.epoch(),"events":feed.after(after)}))
+                Response::success(feed.batch(after))
             },
+            Command::Subscribe { .. } => unreachable!(),
             Command::Shutdown => {
                 shutdown.notify_one();
                 Response::success(serde_json::json!({"shutting_down":true}))

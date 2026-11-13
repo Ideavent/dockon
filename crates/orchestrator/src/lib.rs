@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use dockon_core::{Event, Manifest, Operation, Project, State};
+use dockon_core::{Event, EventBatch, Manifest, Operation, Project, State};
 use dockon_persistence::Store;
 use dockon_provider_native::Instance;
 use std::{
@@ -52,6 +52,16 @@ impl Events {
     }
     pub fn epoch(&self) -> &str {
         &self.epoch
+    }
+    pub fn batch(&self, after: u64) -> EventBatch {
+        EventBatch {
+            epoch: self.epoch.clone(),
+            events: self.after(after),
+            truncated: self
+                .entries
+                .front()
+                .is_some_and(|e| after != 0 && after < e.seq.saturating_sub(1)),
+        }
     }
 }
 struct Entry {

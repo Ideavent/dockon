@@ -87,6 +87,13 @@ pub struct Event {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventBatch {
+    pub epoch: String,
+    pub events: Vec<Event>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Operation {
     pub id: String,
     pub project_id: String,
@@ -105,6 +112,7 @@ pub enum Command {
     Stop { id: String },
     Operation { id: String },
     Events { after: u64 },
+    Subscribe { after: u64 },
     Shutdown,
 }
 

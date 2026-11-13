@@ -1,5 +1,38 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[derive(Default)]
+struct EventStream(std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>);
+
+#[tauri::command]
+fn watch_events(
+    channel: tauri::ipc::Channel<dockon_core::EventBatch>,
+    state: tauri::State<EventStream>,
+) -> Result<(), String> {
+    let mut stream = state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(old) = stream.take() {
+        old.abort();
+    }
+    *stream = Some(tauri::async_runtime::spawn(async move {
+        loop {
+            let result =
+                dockon_ipc::subscribe(0, |batch| channel.send(batch).map_err(Into::into)).await;
+            if result.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }));
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_events(state: tauri::State<EventStream>) -> Result<(), String> {
+    if let Some(old) = state.0.lock().map_err(|e| e.to_string())?.take() {
+        old.abort();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn request(command: dockon_core::Command) -> Result<dockon_core::Response, String> {
     dockon_ipc::call(command)
@@ -50,7 +83,13 @@ async fn connect() -> Result<dockon_core::Response, String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![request, connect])
+        .manage(EventStream::default())
+        .invoke_handler(tauri::generate_handler![
+            request,
+            connect,
+            watch_events,
+            stop_events
+        ])
         .run(tauri::generate_context!())
         .expect("Dockon desktop failed");
 }

@@ -84,3 +84,21 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn migrations_reopen_and_interrupted_operations() {
+        let path = std::env::temp_dir().join(format!("dockon-db-{}.sqlite", uuid::Uuid::new_v4()));
+        let store = Store::open(&path).await.unwrap();
+        store.begin("op", "project", "start").await.unwrap();
+        store.0.close().await;
+        let reopened = Store::open(&path).await.unwrap();
+        let operation = reopened.operation("op").await.unwrap();
+        assert_eq!(operation.status, "interrupted");
+        assert!(operation.error.unwrap().contains("Daemon stopped"));
+        reopened.0.close().await;
+        std::fs::remove_file(path).unwrap();
+    }
+}

@@ -125,6 +125,27 @@ try {
   await stopped(duplicate);
   assert.notEqual(duplicate.exitCode, 0);
   console.log("PASS authenticated IPC and single-instance lock");
+  const subscription = connect(connection.endpoint);
+  const streamed = [];
+  let streamBuffer = "";
+  subscription.on("data", (bytes) => {
+    streamBuffer += bytes;
+    while (streamBuffer.includes("\n")) {
+      const index = streamBuffer.indexOf("\n");
+      const response = JSON.parse(streamBuffer.slice(0, index));
+      streamBuffer = streamBuffer.slice(index + 1);
+      if (response.ok) streamed.push(...response.data.events);
+    }
+  });
+  subscription.on("error", () => {});
+  await new Promise((resolve) => subscription.once("connect", resolve));
+  subscription.write(
+    JSON.stringify({
+      version: 1,
+      token: connection.token,
+      command: { method: "subscribe", params: { after: 0 } },
+    }) + "\n",
+  );
   await register("alpha", { args: ["--with-worker"] });
   await register("beta");
   const alpha = await successful("start", { id: "alpha" });
@@ -215,6 +236,11 @@ try {
   console.log(
     "PASS live STARTING state, asynchronous operation journal and per-project concurrency",
   );
+  await pause(300);
+  assert.ok(streamed.some((event) => event.message === "RUNNING"));
+  assert.ok(streamed.some((event) => event.kind === "stdout"));
+  subscription.destroy();
+  console.log("PASS authenticated event subscription with live process output");
   const oldConnection = connection;
   await successful("shutdown");
   await stopped(daemon);

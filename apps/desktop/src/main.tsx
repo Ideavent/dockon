@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   QueryClient,
   QueryClientProvider,
@@ -94,6 +94,8 @@ const words = {
 async function request<T>(method: string, params?: object): Promise<T> {
   const response = await invoke<Reply<T>>("request", {
     command: { method, ...(params ? { params } : {}) },
+  }).catch((error) => {
+    throw new Error(String(error));
   });
   if (!response.ok) throw new Error(response.error || "Daemon request failed");
   return response.data;
@@ -134,32 +136,40 @@ function App() {
     refetchInterval: 1500,
     retry: false,
   });
-  const feed = useQuery({
-    queryKey: ["events"],
-    queryFn: async () => {
-      let batch = await request<{ epoch: string; events: Event[] }>("events", {
-        after: cursor.current,
-      });
-      if (batch.epoch !== epoch.current) {
+  useEffect(() => {
+    if (!connected) return;
+    const channel = new Channel<{
+      epoch: string;
+      events: Event[];
+      truncated: boolean;
+    }>();
+    channel.onmessage = (batch) => {
+      const changed = batch.epoch !== epoch.current;
+      if (changed) {
         epoch.current = batch.epoch;
         cursor.current = 0;
-        setEvents([]);
-        batch = await request<{ epoch: string; events: Event[] }>("events", {
-          after: 0,
-        });
+      }
+      const next = batch.events.filter((event) => event.seq > cursor.current);
+      if (next.length) cursor.current = next[next.length - 1].seq;
+      if (changed || next.length)
+        setEvents((old) => [...(changed ? [] : old), ...next].slice(-300));
+      if (
+        changed ||
+        next.some((event) => event.kind === "state" || event.kind === "error")
+      )
         cache.invalidateQueries({ queryKey: ["projects"] });
-      }
-      const next = batch.events;
-      if (next.length) {
-        cursor.current = next[next.length - 1].seq;
-        setEvents((old) => [...old, ...next].slice(-300));
-      }
-      return next;
-    },
-    enabled: connected,
-    refetchInterval: 750,
-    retry: false,
-  });
+      if (batch.truncated)
+        setError(
+          lang === "tr"
+            ? "Günlük tamponu doldu; eski olayların bir bölümü artık mevcut değil."
+            : "Log buffer overflow: some earlier events are no longer available.",
+        );
+    };
+    invoke("watch_events", { channel }).catch((e) => setError(String(e)));
+    return () => {
+      invoke("stop_events").catch(() => {});
+    };
+  }, [connected]);
   const action = useMutation({
     mutationFn: async ({
       method,
@@ -195,7 +205,7 @@ function App() {
   const visible = selected
     ? events.filter((e) => e.project_id === selected)
     : events;
-  const failure = error || projects.error?.message || feed.error?.message;
+  const failure = error || projects.error?.message;
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -257,7 +267,7 @@ function App() {
             </div>
             <Button
               variant="primary"
-              disabled={!connected || action.isPending}
+              disabled={!connected || projects.isError || action.isPending}
               onClick={() => setImporting(true)}
             >
               <Plus size={17} />
@@ -287,13 +297,17 @@ function App() {
           <section className="stats">
             <div>
               <span>{t.registered}</span>
-              <strong>{connected && projects.data ? items.length : "—"}</strong>
+              <strong>
+                {connected && !projects.isError && projects.data
+                  ? items.length
+                  : "—"}
+              </strong>
               <FolderGit2 size={20} />
             </div>
             <div>
               <span>{t.running}</span>
               <strong>
-                {connected && projects.data
+                {connected && !projects.isError && projects.data
                   ? items.filter((p) => p.state === "RUNNING").length
                   : "—"}
               </strong>
@@ -344,6 +358,7 @@ function App() {
                       project.state === "RUNNING" ? "secondary" : "primary"
                     }
                     disabled={
+                      projects.isError ||
                       action.isPending ||
                       project.state === "STARTING" ||
                       project.state === "STOPPING"

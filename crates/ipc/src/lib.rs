@@ -67,6 +67,12 @@ pub async fn read_json<T: serde::de::DeserializeOwned>(
     stream: impl AsyncRead + Unpin,
 ) -> Result<T> {
     let mut reader = BufReader::new(stream);
+    read_frame(&mut reader).await
+}
+
+pub async fn read_frame<T: serde::de::DeserializeOwned, R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> Result<T> {
     let mut line = Vec::new();
     loop {
         let chunk = reader.fill_buf().await?;
@@ -97,6 +103,37 @@ pub async fn write_json(
     Ok(())
 }
 
+pub async fn subscribe(
+    after: u64,
+    mut receive: impl FnMut(dockon_core::EventBatch) -> Result<()>,
+) -> Result<()> {
+    let connection: Connection =
+        serde_json::from_slice(&std::fs::read(data_dir()?.join("connection.json"))?)?;
+    #[cfg(windows)]
+    let mut stream = connect_pipe(&connection.endpoint).await?;
+    #[cfg(unix)]
+    let mut stream = tokio::net::UnixStream::connect(&connection.endpoint).await?;
+    write_json(
+        &mut stream,
+        &Request {
+            version: 1,
+            token: connection.token,
+            command: Command::Subscribe { after },
+        },
+    )
+    .await?;
+    let mut reader = BufReader::new(stream);
+    loop {
+        let response: Response =
+            tokio::time::timeout(std::time::Duration::from_secs(5), read_frame(&mut reader))
+                .await??;
+        if !response.ok {
+            bail!("{}", response.error.unwrap_or_default());
+        }
+        receive(serde_json::from_value(response.data)?)?;
+    }
+}
+
 pub async fn call(command: Command) -> Result<Response> {
     let connection: Connection = serde_json::from_slice(
         &std::fs::read(data_dir()?.join("connection.json")).context("Daemon is not available")?,
@@ -111,8 +148,7 @@ pub async fn call_with(connection: &Connection, command: Command) -> Result<Resp
     };
     tokio::time::timeout(std::time::Duration::from_secs(35), async {
         #[cfg(windows)]
-        let mut stream =
-            tokio::net::windows::named_pipe::ClientOptions::new().open(&connection.endpoint)?;
+        let mut stream = connect_pipe(&connection.endpoint).await?;
         #[cfg(unix)]
         let mut stream = tokio::net::UnixStream::connect(&connection.endpoint).await?;
         write_json(&mut stream, &request).await?;
@@ -124,4 +160,57 @@ pub async fn call_with(connection: &Connection, command: Command) -> Result<Resp
     })
     .await
     .context("Daemon request timed out")?
+}
+
+#[cfg(windows)]
+async fn connect_pipe(endpoint: &str) -> Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    // Retry connection only, never an RPC that may already have executed.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint) {
+            Ok(stream) => return Ok(stream),
+            Err(error)
+                if matches!(error.raw_os_error(), Some(231) | Some(2))
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn preserves_coalesced_subscription_frames() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        tokio::spawn(async move {
+            writer.write_all(b"{\"n\":1}\n{\"n\":2}\n").await.unwrap();
+        });
+        let mut reader = BufReader::new(reader);
+        let first: serde_json::Value = read_frame(&mut reader).await.unwrap();
+        let second: serde_json::Value = read_frame(&mut reader).await.unwrap();
+        assert_eq!(first["n"], 1);
+        assert_eq!(second["n"], 2);
+    }
+    #[tokio::test]
+    async fn rejects_truncated_and_oversized_frames() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        tokio::spawn(async move {
+            writer.write_all(b"{\"ok\":true}").await.unwrap();
+        });
+        assert!(read_json::<serde_json::Value>(reader).await.is_err());
+        let (mut writer, reader) = tokio::io::duplex(8192);
+        tokio::spawn(async move {
+            let bytes = vec![b'x'; 1024 * 1024 + 1];
+            let _ = writer.write_all(&bytes).await;
+        });
+        assert!(read_json::<serde_json::Value>(reader)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds"));
+    }
 }

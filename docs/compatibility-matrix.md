@@ -2,9 +2,9 @@
 
 | Capability | Windows x64 | macOS | Linux |
 |---|---|---|---|
-| Rust daemon / desktop | Verification in progress | CI configured, not run | CI configured, not run |
-| IPC | Named Pipe | Unix socket, unverified | Unix socket, unverified |
-| Native lifecycle | Job Object | Process group, unverified | Process group, unverified |
+| Rust daemon / desktop | Local build and native UI E2E pass | Baseline CI passed | CI running |
+| IPC | Named Pipe, authenticated and streamed | Unix socket baseline CI passed | Unix socket CI running |
+| Native lifecycle | Job Object, lifecycle/tree tests pass | Process group baseline CI passed | Process group CI running |
 | Containers, DB, mail, AI | Not implemented | Not implemented | Not implemented |
 | Signed installer/updater | Not implemented | Not implemented | Not implemented |
 
