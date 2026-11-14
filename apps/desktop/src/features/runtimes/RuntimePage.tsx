@@ -40,6 +40,7 @@ const names: Record<string, string> = {
   dotnet: ".NET SDK",
   go: "Go",
   caddy: "Caddy",
+  apache: "Apache",
   python: "Python",
   rust: "Rust / Cargo",
 };

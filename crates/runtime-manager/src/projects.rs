@@ -94,6 +94,10 @@ pub fn detect(root: &Path) -> Result<Detection> {
         child(&root, "index.html")?;
         add("python:static", "python", "index.html");
     }
+    if cfg!(windows) && root.join("public/index.html").is_file() {
+        child(&root, "public/index.html")?;
+        add("apache:static", "apache", "public/index.html");
+    }
     Ok(Detection { root, profiles })
 }
 fn validate_identity(id: &str, name: &str) -> Result<()> {
@@ -120,6 +124,7 @@ fn manifest(
     validate_identity(id, name)?;
     let mut args: Vec<LaunchArg> = vec![];
     match profile {
+        "apache:static" => {}
         p if p.starts_with("node:") => {
             child(root, &p[5..])?;
             args.push(p[5..].into());
@@ -209,6 +214,13 @@ pub async fn create(
     let installation = manager.selected(installation_id).await?;
     let mut files: Vec<(&str, String)> = vec![];
     let profile = match installation.runtime.as_str() {
+        "apache" if cfg!(windows) => {
+            files.push((
+                "public/index.html",
+                "<!doctype html><meta charset=\"utf-8\"><title>Dockon</title><h1>Dockon · Apache</h1>\n".into(),
+            ));
+            "apache:static"
+        }
         "node" => {
             files.push(("server.mjs", "import http from 'node:http';\nhttp.createServer((req,res)=>{res.setHeader('Content-Type','text/plain');res.end('dockon · Node.js '+process.version);}).listen(Number(process.env.PORT),'127.0.0.1');\n".into()));
             files.push((

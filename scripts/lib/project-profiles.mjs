@@ -38,7 +38,14 @@ export async function verifyProfile(h, installation) {
   );
   assert.ok(profile);
   const running = await h.action("start", id);
-  assert.equal((await fetch(`http://127.0.0.1:${running.port}/`)).status, 200);
+  const url = `http://127.0.0.1:${running.port}`;
+  const response = await fetch(url);
+  assert.equal(response.status, 200);
+  if (installation.runtime === "apache") {
+    assert.match(await response.text(), /Dockon · Apache/);
+    await writeFile(join(root, "public", "private.php"), "private fixture");
+    assert.equal((await fetch(url + "/private.php")).status, 403);
+  }
   await h.action("stop", id);
   const privateData = join(
     h.data,

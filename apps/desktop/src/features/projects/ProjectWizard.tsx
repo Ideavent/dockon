@@ -3,7 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../../components/ui/button";
 import { request } from "../../ipc/client";
 
-type Installation = { id: string; runtime: string; version: string };
+type Installation = {
+  id: string;
+  runtime: string;
+  version: string;
+  platform: string;
+};
 type Detection = {
   root: string;
   profiles: { id: string; runtime: string; evidence: string }[];
@@ -51,7 +56,9 @@ export function ProjectWizard({
   const runtime = detect.data?.profiles.find((p) => p.id === profile)?.runtime;
   const choices = (installed.data || []).filter(
     (i) =>
-      i.runtime !== "caddy" && (mode === "create" || i.runtime === runtime),
+      i.runtime !== "caddy" &&
+      (i.runtime !== "apache" || i.platform.startsWith("windows-")) &&
+      (mode === "create" || i.runtime === runtime),
   );
   const title = tr ? "Proje hazırla" : "Set up a project";
   return (

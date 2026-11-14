@@ -95,9 +95,12 @@ impl RuntimeManager {
     pub fn discover(&self) -> Vec<SystemCandidate> {
         let mut found = vec![];
         let mut seen = std::collections::BTreeSet::new();
-        for runtime in ["node", "php", "dotnet", "go", "python", "rust", "caddy"] {
+        for runtime in [
+            "node", "php", "dotnet", "go", "python", "rust", "caddy", "apache",
+        ] {
             let name = match runtime {
                 "rust" => "cargo",
+                "apache" => "httpd",
                 other => other,
             };
             let filename = if cfg!(windows) {
@@ -357,7 +360,7 @@ fn runtime_root(runtime: &str, executable: &Path) -> Result<PathBuf> {
 fn runtime_id(runtime: &str) -> Result<()> {
     if !matches!(
         runtime,
-        "node" | "php" | "dotnet" | "go" | "python" | "rust" | "caddy"
+        "node" | "php" | "dotnet" | "go" | "python" | "rust" | "caddy" | "apache"
     ) {
         bail!("Unsupported runtime id");
     }
@@ -413,6 +416,7 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
         .args(match runtime {
             "php" => vec!["-n", "--version"],
             "go" | "caddy" => vec!["version"],
+            "apache" => vec!["-v"],
             _ => vec!["--version"],
         })
         .current_dir(directory)
@@ -451,6 +455,13 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
     .await
     .context("Runtime version check timed out")??;
     let text = String::from_utf8_lossy(&output);
+    if runtime == "apache" {
+        let version = text
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix("Apache/"))
+            .context("Executable did not identify itself as Apache HTTP Server")?;
+        return Ok(semver::Version::parse(version)?.to_string());
+    }
     let version = text
         .split_whitespace()
         .find_map(|part| {

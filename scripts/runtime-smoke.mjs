@@ -74,7 +74,7 @@ try {
     "PASS publisher digest, isolated staged installation, observed runtime version and managed project lifecycle",
   );
   if (process.env.DOCKON_EXTENDED_RUNTIMES === "1") {
-    for (const runtime of ["php", "dotnet", "go", "caddy"]) {
+    for (const runtime of ["php", "dotnet", "go", "caddy", "apache"]) {
       const catalog = await h.call("runtime_catalog", { runtime });
       if (!catalog.versions.length) {
         console.log(`SKIP ${runtime}: ${catalog.note}`);

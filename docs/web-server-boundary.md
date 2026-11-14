@@ -2,7 +2,9 @@
 
 This document records the remaining implementation boundary. Nginx/Apache switching is not implemented and must not be presented as a supported feature yet.
 
-The pending user decision is the Windows Apache binary source: Apache Lounge packages, an explicitly selected existing installation, or container-only Apache. No Apache package is downloaded before that choice. The [Apache project states it does not supply Windows binary releases](https://httpd.apache.org/docs/current/platform/windows.html); its documentation lists Apache Lounge as one distribution. [Apache Lounge publishes checksums and PGP signatures](https://www.apachelounge.com/download/), which need a separate trusted-key/source policy if selected.
+Dockon uses Apache Lounge for managed Windows x64 installs. The catalog pins a release and the publisher's SHA-512 digest. Updating that release requires updating the pin. PGP verification is pending. Users can also register an existing Apache executable by absolute path. The Windows static site profile expects an Apache binary with the standard `bin`, `modules` and `conf` layout. Apache Lounge publishes release checksums and PGP signatures. [Apache Windows documentation](https://httpd.apache.org/docs/current/platform/windows.html) · [Apache Lounge downloads](https://www.apachelounge.com/download/)
+
+The Windows static profile creates or imports a site with `public/index.html`. Apache serves selected static file types from `public` on loopback with project-specific configuration, PID and error log paths. PHP, FastCGI, `.htaccess` and live frontend switching remain pending. Generate an Apache Docker sample with `scripts/New-SampleManifest.ps1 -ApacheContainer` and import the resulting manifest to run the image's sample site.
 
 For native Nginx, [official downloads](https://nginx.org/en/download.html) have detached PGP signatures with [published keys](https://nginx.org/en/pgp_keys.html). Do not substitute an unverified download for the checksum-verified installer boundary already implemented. [Nginx documents its Windows build as beta](https://nginx.org/en/docs/windows.html); that limitation belongs in the compatibility UI.
 

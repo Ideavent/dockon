@@ -23,6 +23,8 @@ Create/import a sample after building:
 
 Paste the returned absolute path into Import manifest. Alternatively, select an installed runtime on the Runtimes page and use New / import to create a project or detect an existing source folder. Projects start only when requested. Manifest imports do not execute code; explicit system runtime selection checks the selected executable's version. UI and daemon run as ordinary user. Closing the UI leaves the daemon and running projects intact. Run `target\debug\dockonctl shutdown` to stop the daemon and its workloads.
 
+On Windows x64, select Apache on the Runtimes page to install the pinned Apache Lounge package or enter the absolute path of an existing `httpd.exe`. The project wizard supports Apache static sites with `public/index.html`. To try Apache with Docker, run `.\scripts\New-SampleManifest.ps1 -ApacheContainer` and import the generated manifest. This example serves the image's bundled page.
+
 ## Checks
 
 ```powershell

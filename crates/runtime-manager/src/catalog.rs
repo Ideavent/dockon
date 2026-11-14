@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+const APACHE_VERSION: &str = "2.4.71-261112";
+const APACHE_URL: &str =
+    "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.71-261112-Win64-VS18.zip";
+const APACHE_SHA512: &str = "CA0EB9067369D4E4A596A5ED7E31D53BEE70F2524B1A671AA70CC0E8E07C838726B4CD6B22249FF3180171B7B8DD011DCF44DFA38CE5005373878635EF8894F9";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
     pub runtime: String,
@@ -53,6 +58,23 @@ fn version_key(value: &str) -> semver::Version {
         .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
 }
 pub async fn versions(http: &Transport, runtime: &str) -> Result<(Vec<Version>, Option<String>)> {
+    if runtime == "apache" {
+        let windows_x64 = cfg!(all(target_os = "windows", target_arch = "x86_64"));
+        let versions = if windows_x64 {
+            vec![Version {
+                version: APACHE_VERSION.into(),
+                support: "publisher_release".into(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let note = if windows_x64 {
+            "Apache Lounge Win64. Requires the Microsoft Visual C++ Redistributable."
+        } else {
+            "Managed Apache is available on Windows x64. Select a system Apache executable on this platform."
+        };
+        return Ok((versions, Some(note.into())));
+    }
     let mut result=match runtime {
         "node"=>{
             let index:Vec<Value>=http.json("https://nodejs.org/dist/index.json").await?;
@@ -255,6 +277,16 @@ pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<
             value.hash = file["sha256"].as_str().context("Missing Go digest")?.into();
             value.prefix = "go".into();
             value.executable = if os == "win" { "bin/go.exe" } else { "bin/go" }.into();
+        }
+        "apache" => {
+            if (os, arch) != ("win", "x64") || version != APACHE_VERSION {
+                bail!("This Apache Lounge package is only available for Windows x64");
+            }
+            value.url = APACHE_URL.into();
+            value.hash = APACHE_SHA512.into();
+            value.hash_kind = "sha512".into();
+            value.format = "zip".into();
+            value.executable = "Apache24/bin/httpd.exe".into();
         }
         "caddy" => {
             semver::Version::parse(version)?;

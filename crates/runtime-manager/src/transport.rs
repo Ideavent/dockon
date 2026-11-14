@@ -25,6 +25,7 @@ pub fn allowed(url: &Url) -> bool {
                     | "release-assets.githubusercontent.com"
                     | "objects.githubusercontent.com"
                     | "raw.githubusercontent.com"
+                    | "www.apachelounge.com"
             )
         )
 }

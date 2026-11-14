@@ -38,6 +38,68 @@ impl RuntimeManager {
             env.insert(key.into(), path.to_string_lossy().into());
         };
         match record.runtime.as_str() {
+            "apache" if cfg!(windows) => {
+                if !manifest.args.is_empty() {
+                    bail!("Apache static projects use generated configuration");
+                }
+                let server_root = bin
+                    .parent()
+                    .context("Apache installation root unavailable")?;
+                let public = dunce::canonicalize(manifest.root.join("public"))?;
+                if !public.starts_with(dunce::canonicalize(&manifest.root)?) {
+                    bail!("Apache public directory escapes the project root");
+                }
+                let quote = |path: &Path| -> Result<String> {
+                    let path = path.to_str().context("Apache requires UTF-8 paths")?;
+                    if path.contains(['"', '\n', '\r', '$']) {
+                        bail!("Unsupported character in Apache configuration path");
+                    }
+                    Ok(format!("\"{}\"", path.replace('\\', "/")))
+                };
+                let server_root = quote(server_root)?;
+                let public = quote(&public)?;
+                let pid = quote(&data.join("httpd.pid"))?;
+                let error_log = quote(&data.join("httpd-error.log"))?;
+                let config = data.join("httpd.conf");
+                std::fs::write(
+                    &config,
+                    format!(
+                        r#"ServerRoot {server_root}
+ServerName localhost
+LoadModule authz_core_module modules/mod_authz_core.so
+LoadModule dir_module modules/mod_dir.so
+LoadModule mime_module modules/mod_mime.so
+TypesConfig conf/mime.types
+PidFile {pid}
+ErrorLog {error_log}
+DocumentRoot {public}
+<Directory />
+    Require all denied
+</Directory>
+<Directory {public}>
+    Options None
+    AllowOverride None
+    Require all granted
+    DirectoryIndex index.html
+    <FilesMatch "(?i)^(?![a-z0-9_-][a-z0-9_.-]*\.(?:html|css|js|png|jpe?g|gif|svg|ico|webp)$).+">
+        Require all denied
+    </FilesMatch>
+</Directory>
+"#
+                    ),
+                )?;
+                let config = config
+                    .to_str()
+                    .context("Invalid Apache config path")?
+                    .replace('\\', "/");
+                manifest.args = vec![
+                    "-X".into(),
+                    "-f".into(),
+                    config.into(),
+                    "-C".into(),
+                    LaunchArg::template("Listen 127.0.0.1:${DOCKON_PORT}"),
+                ];
+            }
             "node" => {
                 set(&mut environment, "npm_config_cache", &cache.join("npm"));
             }
