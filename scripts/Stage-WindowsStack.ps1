@@ -5,6 +5,9 @@ $ErrorActionPreference = 'Stop'
 $Stage = [IO.Path]::GetFullPath($Stage)
 $cache = New-Item -ItemType Directory -Force -Path (Join-Path $Stage '../stack-downloads')
 $packages = @(
+    @{ Name = 'caddy'; File = 'caddy.zip'; Prefix = ''; Binary = 'caddy.exe'; Algorithm = 'SHA512'
+       Url = 'https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_windows_amd64.zip'
+       Hash = '98753d5d42650383d00619ac70917a217141f9e92314185bf6c1b8b439cfcfdf8393da0ebb4675c8cb3b23d29a19aabe99dc5aca64fa1bfc3a1ba22509b06871' },
     @{ Name = 'apache'; File = 'apache.zip'; Prefix = 'Apache24'; Binary = 'bin/httpd.exe'; Algorithm = 'SHA512'
        Url = 'https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.71-261112-Win64-VS18.zip'
        Hash = 'CA0EB9067369D4E4A596A5ED7E31D53BEE70F2524B1A671AA70CC0E8E07C838726B4CD6B22249FF3180171B7B8DD011DCF44DFA38CE5005373878635EF8894F9' },

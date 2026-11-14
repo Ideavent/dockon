@@ -183,6 +183,7 @@ impl RuntimeManager {
             ("apache", "bin/apache/bin/httpd.exe"),
             ("php", "bin/php/php.exe"),
             ("php-cgi", "bin/php/php-cgi.exe"),
+            ("caddy", "bin/caddy/caddy.exe"),
         ] {
             let executable = directory.join(relative);
             if executable.is_file()

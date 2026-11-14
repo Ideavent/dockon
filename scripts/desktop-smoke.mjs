@@ -17,6 +17,7 @@ await new Promise((r) => listener.close(r));
 const env = {
   ...process.env,
   DOCKON_DATA_DIR: data,
+  DOCKON_WWW_DIR: process.env.DOCKON_WWW_DIR || join(data, "www"),
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
 };
 if (process.env.DOCKON_CADDY_EXECUTABLE)
@@ -145,19 +146,14 @@ try {
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByRole("button", { name: /^Projeler/ }).click();
   await page
-    .getByRole("button", { name: "Yeni / içe aktar", exact: true })
+    .getByRole("button", { name: "Yeni proje", exact: true })
     .click();
   const wizard = page.getByRole("dialog", {
     name: "Proje hazırla",
     exact: true,
   });
   await wizard.getByLabel("Proje adı", { exact: true }).fill("Wizard Node");
-  await wizard
-    .getByLabel("Proje kimliği (harf, rakam, - ve _)", { exact: true })
-    .fill("wizard-node");
-  await wizard
-    .getByLabel("Proje klasörünün tam yolu", { exact: true })
-    .fill(join(data, "wizard-node"));
+  await expect(wizard.getByText("wizard-node.test", { exact: true })).toBeVisible();
   await wizard
     .getByLabel("Çalışma zamanı ve sürüm", { exact: true })
     .selectOption({
@@ -181,6 +177,10 @@ try {
   assert.match(await (await fetch(wizardLink)).text(), /dockon · Node.js/);
   await card.getByRole("button", { name: "Durdur", exact: true }).click();
   await card.getByRole("button", { name: "Başlat", exact: true }).waitFor();
+  await card.getByRole("button", { name: "Ayarlar", exact: true }).click();
+  const projectSettings = page.getByRole("dialog", { name: "Proje ayarları" });
+  await expect(projectSettings.getByRole("checkbox", { name: "SSL kullan (HTTPS)" })).toBeVisible();
+  await projectSettings.getByRole("button", { name: "Kapat", exact: true }).click();
   await page.getByRole("button", { name: "Tanılama", exact: true }).click();
   const report = page.getByRole("region", { name: "Durum raporu" }).locator("pre");
   await report.waitFor();

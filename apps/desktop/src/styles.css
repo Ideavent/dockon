@@ -745,3 +745,20 @@ footer span:first-child {
     gap: 20px;
   }
 }
+.project-location {
+  display: grid;
+  gap: .4rem;
+  padding: .9rem 1rem;
+  border: 1px solid #414756;
+  border-radius: .75rem;
+  margin: .7rem 0;
+}
+.project-location > span { font-size: .8rem; }
+.project-location > code { overflow-wrap: anywhere; }
+.project-ssl {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  margin: .8rem 0;
+}
+.project-ssl input { width: auto; }

@@ -525,6 +525,16 @@ pub enum Command {
     Capabilities,
     Diagnostics,
     WorkspaceFolders,
+    WorkspaceCreate {
+        slug: String,
+        name: String,
+        runtime_installation: String,
+        php_cgi_installation: Option<String>,
+    },
+    WorkspaceRoute {
+        id: String,
+        https: bool,
+    },
     LocalServices,
     LocalServicesSet {
         running: bool,

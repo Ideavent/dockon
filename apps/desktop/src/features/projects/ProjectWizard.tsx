@@ -17,10 +17,12 @@ export function ProjectWizard({
   lang,
   onClose,
   folder,
+  workspaceRoot,
 }: {
   lang: "tr" | "en";
   onClose: () => void;
   folder?: { name: string; path: string };
+  workspaceRoot?: string;
 }) {
   const tr = lang === "tr";
   const [mode, setMode] = useState<"create" | "import">(folder ? "import" : "create");
@@ -47,8 +49,12 @@ export function ProjectWizard({
     if (folder) detect.mutate(folder.path);
   }, [folder]);
   const save = useMutation({
-    mutationFn: () =>
-      request(mode === "create" ? "project_create" : "project_import", {
+    mutationFn: () => {
+      if (mode === "create" && workspaceRoot) {
+        return request("workspace_create", { slug, name: name.trim(), runtime_installation: installation,
+          php_cgi_installation: apacheCreation && phpCgi ? phpCgi : undefined });
+      }
+      return request(mode === "create" ? "project_create" : "project_import", {
         id,
         name,
         root,
@@ -59,12 +65,18 @@ export function ProjectWizard({
               ...(usesFastCgi ? { php_cgi_installation: phpCgi } : {}),
             }
           : {}),
-      }),
+      });
+    },
     onSuccess: () => {
       cache.invalidateQueries({ queryKey: ["projects"] });
       onClose();
     },
   });
+  const managedCreate = mode === "create" && Boolean(workspaceRoot);
+  const apacheCreation = managedCreate && installed.data?.some((item) => item.id === installation && item.runtime === "apache");
+  const slug = name.trim().toLocaleLowerCase("tr").replace(/ı/g, "i")
+    .normalize("NFD").replace(/\p{M}/gu, "").replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 63).replace(/^-+|-+$/g, "");
   const runtime = detect.data?.profiles.find((p) => p.id === profile)?.runtime;
   const choices = (installed.data || []).filter(
     (i) =>
@@ -121,6 +133,14 @@ export function ProjectWizard({
           required
           disabled={save.isPending}
         />
+        {managedCreate ? (
+          <div className="project-location">
+            <span>{tr ? "Proje klasörü" : "Project folder"}</span>
+            <code>{workspaceRoot}\{slug || "…"}</code>
+            <span>{tr ? "Yerel adres" : "Local address"}</span>
+            <code>{slug ? `${slug}.test` : "…"}</code>
+          </div>
+        ) : <>
         <label htmlFor="project-id">
           {tr
             ? "Proje kimliği (harf, rakam, - ve _)"
@@ -157,6 +177,7 @@ export function ProjectWizard({
               ? "Kaynak dosyalar değiştirilmez. Bağımlılık kurulumu ayrıca yapılır."
               : "Source files stay unchanged. Dependencies must be installed separately."}
         </p>
+        </>}
         {mode === "import" && (
           <>
             <Button
@@ -227,6 +248,16 @@ export function ProjectWizard({
             </option>
           ))}
         </select>
+        {apacheCreation && (
+          <>
+            <label htmlFor="new-project-php">{tr ? "PHP bileşeni" : "PHP component"}</label>
+            <select id="new-project-php" value={phpCgi} onChange={(event) => setPhpCgi(event.target.value)} disabled={save.isPending}>
+              <option value="">{tr ? "Statik site (HTML)" : "Static site (HTML)"}</option>
+              {installed.data?.filter((item) => item.runtime === "php-cgi").map((item) =>
+                <option key={item.id} value={item.id}>PHP {item.version} (FastCGI)</option>)}
+            </select>
+          </>
+        )}
         {usesFastCgi && (
           <>
             <label htmlFor="project-php-cgi">PHP CGI</label>
@@ -282,6 +313,7 @@ export function ProjectWizard({
             disabled={
               save.isPending ||
               !installation ||
+              (managedCreate && !slug) ||
               (mode === "import" && !profile) ||
               (usesFastCgi && !phpCgi)
             }

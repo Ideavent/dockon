@@ -23,6 +23,7 @@ struct DaemonState {
     shutdown: Arc<Notify>,
     router: Arc<dockon_router::Router>,
     local_services: local_services::Services,
+    workspace_routes: tokio::sync::Mutex<()>,
 }
 impl DaemonState {
     async fn system_apply(self: &Arc<Self>, token: String) -> Result<dockon_core::Operation> {
@@ -116,6 +117,7 @@ async fn main() -> Result<()> {
         events,
         shutdown: shutdown.clone(),
         local_services: local_services::Services::new(dir.join("services"))?,
+        workspace_routes: tokio::sync::Mutex::new(()),
     });
     let router_state = state.clone();
     let router_task = tokio::spawn(async move {
@@ -228,6 +230,41 @@ async fn serve(
             Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"http_tcp", "container":"digest_pinned_http_tcp", "ai":"not_implemented"})),
             Command::Diagnostics => Response::success(diagnostics::report(&state).await?),
             Command::WorkspaceFolders => Response::success(workspace::folders()?),
+            Command::WorkspaceCreate { slug, name, runtime_installation, php_cgi_installation } => {
+                let root = workspace::project_path(&slug)?;
+                if state.projects.list().await?.iter().any(|p| p.manifest.id == slug) {
+                    anyhow::bail!("A project with this folder name already exists");
+                }
+                let manifest = dockon_runtime_manager::projects::create_with_php(&state.runtimes, &slug, &name, &root, &runtime_installation, php_cgi_installation.as_deref()).await?;
+                Response::success(state.projects.register(manifest).await?)
+            },
+            Command::WorkspaceRoute { id, https } => {
+                let _guard = state.workspace_routes.lock().await;
+                let projects = state.projects.list().await?;
+                let project = projects.iter().find(|project| project.manifest.id == id)
+                    .ok_or_else(|| anyhow::anyhow!("Project not found"))?;
+                let slug = project.manifest.root.file_name().and_then(|v| v.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("Project has no folder name"))?.to_ascii_lowercase();
+                let domain = format!("{slug}.test");
+                dockon_router::validate_domain(&domain)?;
+                let mut settings = match state.router.status().await?.settings {
+                    Some(settings) => settings,
+                    None => {
+                        let caddy = state.runtimes.installed().await?.into_iter().find(|r| r.runtime == "caddy")
+                            .ok_or_else(|| anyhow::anyhow!("Install Caddy from Runtimes to enable local addresses"))?;
+                        dockon_core::RouterSettings { runtime_installation: caddy.id, http_port: 8080, https_port: 8443, routes: vec![] }
+                    }
+                };
+                if let Some(route) = settings.routes.iter_mut().find(|route| route.project_id == id) {
+                    route.domain = domain;
+                    route.https = https;
+                } else {
+                    settings.routes.push(dockon_core::ProjectRoute { project_id: id, domain, https });
+                }
+                let plan = state.router.plan(settings, &projects).await?;
+                state.router.apply(&plan.token, &projects).await?;
+                Response::success(state.router.status().await?)
+            },
             Command::LocalServices => Response::success(state.local_services.status().await?),
             Command::LocalServicesSet { running } => Response::success(state.local_services.set(running).await?),
             Command::GuardianPreview => Response::success(serde_json::json!({

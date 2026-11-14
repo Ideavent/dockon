@@ -18,7 +18,7 @@ try {
         }
     }
     $acl = Get-Acl -LiteralPath $directory
-    foreach ($relative in 'apache/bin/httpd.exe', 'php/php-cgi.exe', 'mysql/bin/mysqld.exe', 'mailpit/mailpit.exe') {
+    foreach ($relative in 'apache/bin/httpd.exe', 'php/php-cgi.exe', 'mysql/bin/mysqld.exe', 'mailpit/mailpit.exe', 'caddy/caddy.exe') {
         if (!(Test-Path -LiteralPath "$directory/bin/$relative" -PathType Leaf)) {
             throw "Bundled runtime is missing: $relative"
         }

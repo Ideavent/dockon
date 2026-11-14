@@ -16,6 +16,10 @@ struct ProjectFolder {
 }
 
 pub fn folders() -> Result<Workspace> {
+    scan(root()?)
+}
+
+pub fn root() -> Result<PathBuf> {
     let root = match std::env::var_os("DOCKON_WWW_DIR") {
         Some(path) => PathBuf::from(path),
         None if cfg!(windows) => PathBuf::from(r"C:\dockon\www"),
@@ -24,7 +28,23 @@ pub fn folders() -> Result<Workspace> {
     if !root.is_absolute() {
         bail!("The www directory must be an absolute path");
     }
-    scan(root)
+    Ok(root)
+}
+
+pub fn project_path(slug: &str) -> Result<PathBuf> {
+    if slug.is_empty()
+        || slug.len() > 63
+        || slug.starts_with('-')
+        || slug.ends_with('-')
+        || !slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        bail!("Use a folder name with lowercase letters, digits and hyphens");
+    }
+    let root = root()?;
+    fs::create_dir_all(&root)?;
+    Ok(root.join(slug))
 }
 
 fn scan(root: PathBuf) -> Result<Workspace> {

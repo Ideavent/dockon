@@ -22,6 +22,7 @@ import {
   Plus,
   Circle,
   Stethoscope,
+  Settings,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import "./styles.css";
@@ -30,6 +31,7 @@ import { RuntimePage } from "./features/runtimes/RuntimePage";
 import { ProjectWizard } from "./features/projects/ProjectWizard";
 import { RouterPage } from "./features/routing/RouterPage";
 import { DiagnosticsPage } from "./features/diagnostics/DiagnosticsPage";
+import { ProjectSettings } from "./features/projects/ProjectSettings";
 
 type Project = {
   manifest: {
@@ -124,10 +126,12 @@ function App() {
   const cache = useQueryClient();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
+  const [routeError, setRouteError] = useState("");
   const [importing, setImporting] = useState(false);
   const [wizard, setWizard] = useState(false);
   const [folder, setFolder] = useState<{ name: string; path: string }>();
   const [serverSwitch, setServerSwitch] = useState("");
+  const [settingsProject, setSettingsProject] = useState<Project>();
   const connectionDetails = useMutation({
     mutationFn: ({ id, engine }: { id: string; engine: string }) =>
       request<{
@@ -263,7 +267,23 @@ function App() {
           const operation = await request<Operation>("operation", {
             id: reply.id,
           });
-          if (operation.status === "completed") return operation;
+          if (operation.status === "completed") {
+            const projectId = "id" in params ? params.id : undefined;
+            if (method === "start" && workspace.data?.folders.some((entry) =>
+              items.some((project) => project.manifest.id === projectId &&
+                project.manifest.root.replace(/^\\\\\?\\/, "").toLowerCase() === entry.path.toLowerCase())
+            )) {
+              try {
+                const router = await request<{ settings: { routes: { project_id: string; https: boolean }[] } | null }>("router_status");
+                const route = router.settings?.routes.find((entry) => entry.project_id === projectId);
+                await request("workspace_route", { id: projectId, https: route?.https ?? false });
+                setRouteError("");
+              } catch (error) {
+                setRouteError(String(error));
+              }
+            }
+            return operation;
+          }
           if (operation.status !== "running")
             throw new Error(operation.error || operation.status);
           await new Promise((resolve) => setTimeout(resolve, 200));
@@ -313,7 +333,7 @@ function App() {
   const visible = selected
     ? events.filter((e) => e.project_id === selected)
     : events;
-  const failure = error || projects.error?.message;
+  const failure = error || routeError || projects.error?.message;
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -412,9 +432,7 @@ function App() {
             <>
               <section className="page-heading">
                 <div>
-                  <div className="eyebrow">BUILD SOMETHING GREAT</div>
                   <h1>{t.projects}</h1>
-                  <p>{t.subtitle}</p>
                 </div>
                 <div className="heading-actions">
                   <Button disabled={!connected || !startable.length || bulk.isPending || action.isPending} onClick={() => bulk.mutate("start")}>
@@ -426,12 +444,12 @@ function App() {
                   <Button
                     variant="primary"
                     disabled={
-                      !connected || projects.isError || action.isPending
+                      !connected || !workspace.data || projects.isError || action.isPending
                     }
                     onClick={() => { setFolder(undefined); setWizard(true); }}
                   >
                     <Plus size={17} />
-                    {lang === "tr" ? "Yeni / içe aktar" : "New / import"}
+                    {lang === "tr" ? "Yeni proje" : "New project"}
                   </Button>
                   <Button
                     disabled={
@@ -608,6 +626,9 @@ function App() {
                       <p className="project-error">{project.error}</p>
                     )}
                     <div className="card-actions">
+                      <Button variant="secondary" onClick={() => setSettingsProject(project)}>
+                        <Settings size={15} /> {lang === "tr" ? "Ayarlar" : "Settings"}
+                      </Button>
                       {project.services
                         ?.filter(
                           (service) =>
@@ -794,7 +815,9 @@ function App() {
           <span>v0.1.0 · {t.foundation}</span>
         </footer>
       </main>
-      {wizard && <ProjectWizard lang={lang} folder={folder} onClose={() => setWizard(false)} />}
+      {wizard && <ProjectWizard lang={lang} folder={folder} workspaceRoot={workspace.data?.root} onClose={() => setWizard(false)} />}
+      {settingsProject && <ProjectSettings lang={lang} id={settingsProject.manifest.id} name={settingsProject.manifest.name}
+        root={settingsProject.manifest.root} onClose={() => setSettingsProject(undefined)} />}
       {connectionDetails.data && (
         <div className="modal-backdrop">
           <section

@@ -247,13 +247,40 @@ pub async fn create(
     root: &Path,
     installation_id: &str,
 ) -> Result<Manifest> {
+    create_with_php(manager, id, name, root, installation_id, None).await
+}
+
+pub async fn create_with_php(
+    manager: &RuntimeManager,
+    id: &str,
+    name: &str,
+    root: &Path,
+    installation_id: &str,
+    php_cgi: Option<&str>,
+) -> Result<Manifest> {
     validate_identity(id, name)?;
     if !root.is_absolute() || root.exists() {
         bail!("New project path must be absolute and must not already exist");
     }
     let installation = manager.selected(installation_id).await?;
+    if php_cgi.is_some() && (installation.runtime != "apache" || !cfg!(windows)) {
+        bail!("Select Windows Apache to create a FastCGI project");
+    }
+    if let Some(id) = php_cgi {
+        if manager.selected(id).await?.runtime != "php-cgi" {
+            bail!("The selected runtime must be PHP CGI");
+        }
+    }
     let mut files: Vec<(&str, String)> = vec![];
     let profile = match installation.runtime.as_str() {
+        "apache" if php_cgi.is_some() => {
+            files.push((
+                "public/index.php",
+                "<?php header('Content-Type: text/plain'); echo 'dockon · PHP '.PHP_VERSION;\n"
+                    .into(),
+            ));
+            "apache:php"
+        }
         "nginx" | "apache" if installation.runtime == "nginx" || cfg!(windows) => {
             let server = if installation.runtime == "nginx" {
                 "Nginx"
@@ -336,7 +363,8 @@ pub async fn create(
         file.write_all(contents.as_bytes())?;
     }
     let root = dunce::canonicalize(root)?;
-    let manifest = manifest(id, name, &root, &installation, profile)?;
+    let mut manifest = manifest(id, name, &root, &installation, profile)?;
+    attach_php_cgi(manager, &mut manifest, profile, php_cgi).await?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
