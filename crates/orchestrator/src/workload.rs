@@ -63,7 +63,9 @@ pub(crate) async fn launch(
     let port = lease.port;
     let mut instance = match manifest.provider {
         Provider::Native => {
-            let (prepared, environment) = runtimes.prepare(manifest, data_dir, environment).await?;
+            let (prepared, environment) = runtimes
+                .prepare(manifest, data_dir, environment, port)
+                .await?;
             let mut instance = Instance::spawn(&prepared, port, data_dir, &environment)?;
             if let Some(stdout) = instance.child.stdout.take() {
                 capture(

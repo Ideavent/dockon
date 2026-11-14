@@ -41,6 +41,7 @@ const names: Record<string, string> = {
   go: "Go",
   caddy: "Caddy",
   apache: "Apache",
+  nginx: "Nginx",
   python: "Python",
   rust: "Rust / Cargo",
 };

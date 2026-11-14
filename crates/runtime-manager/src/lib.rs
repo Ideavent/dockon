@@ -96,7 +96,7 @@ impl RuntimeManager {
         let mut found = vec![];
         let mut seen = std::collections::BTreeSet::new();
         for runtime in [
-            "node", "php", "dotnet", "go", "python", "rust", "caddy", "apache",
+            "node", "php", "dotnet", "go", "python", "rust", "caddy", "apache", "nginx",
         ] {
             let name = match runtime {
                 "rust" => "cargo",
@@ -360,7 +360,7 @@ fn runtime_root(runtime: &str, executable: &Path) -> Result<PathBuf> {
 fn runtime_id(runtime: &str) -> Result<()> {
     if !matches!(
         runtime,
-        "node" | "php" | "dotnet" | "go" | "python" | "rust" | "caddy" | "apache"
+        "node" | "php" | "dotnet" | "go" | "python" | "rust" | "caddy" | "apache" | "nginx"
     ) {
         bail!("Unsupported runtime id");
     }
@@ -416,7 +416,7 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
         .args(match runtime {
             "php" => vec!["-n", "--version"],
             "go" | "caddy" => vec!["version"],
-            "apache" => vec!["-v"],
+            "apache" | "nginx" => vec!["-v"],
             _ => vec!["--version"],
         })
         .current_dir(directory)
@@ -450,16 +450,25 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
         if !child.wait().await?.success() {
             bail!("Runtime version check failed; verify its platform prerequisites");
         }
+        if runtime == "nginx" {
+            bytes.push(b' ');
+            bytes.extend(errors);
+        }
         Ok::<_, anyhow::Error>(bytes)
     })
     .await
     .context("Runtime version check timed out")??;
     let text = String::from_utf8_lossy(&output);
-    if runtime == "apache" {
+    if matches!(runtime, "apache" | "nginx") {
+        let product = if runtime == "apache" {
+            "Apache/"
+        } else {
+            "nginx/"
+        };
         let version = text
             .split_whitespace()
-            .find_map(|part| part.strip_prefix("Apache/"))
-            .context("Executable did not identify itself as Apache HTTP Server")?;
+            .find_map(|part| part.strip_prefix(product))
+            .context("Executable did not identify itself as the selected web server")?;
         return Ok(semver::Version::parse(version)?.to_string());
     }
     let version = text

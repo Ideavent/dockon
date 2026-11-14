@@ -9,6 +9,7 @@ impl RuntimeManager {
         manifest: &Manifest,
         data: &Path,
         environment: &BTreeMap<String, String>,
+        port: u16,
     ) -> Result<(Manifest, BTreeMap<String, String>)> {
         let mut manifest = manifest.clone();
         let mut environment = environment.clone();
@@ -38,6 +39,65 @@ impl RuntimeManager {
             env.insert(key.into(), path.to_string_lossy().into());
         };
         match record.runtime.as_str() {
+            "nginx" => {
+                if !manifest.args.is_empty() {
+                    bail!("Nginx static projects use generated configuration");
+                }
+                let public = web_public(&manifest.root)?;
+                #[cfg(windows)]
+                reject_windows_links(&public)?;
+                let public = web_path(&public)?;
+                let config = data.join("nginx.conf");
+                let prefix = format!("{}/", web_path(data)?);
+                std::fs::write(
+                    &config,
+                    format!(
+                        r#"daemon off;
+worker_processes 1;
+pid nginx.pid;
+error_log stderr;
+events {{ worker_connections 128; }}
+http {{
+    access_log off;
+    types {{
+        text/html html;
+        text/css css;
+        application/javascript js;
+        image/png png;
+        image/jpeg jpeg jpg;
+        image/gif gif;
+        image/svg+xml svg;
+        image/x-icon ico;
+        image/webp webp;
+    }}
+    client_body_temp_path client_body;
+    proxy_temp_path proxy;
+    fastcgi_temp_path fastcgi;
+    uwsgi_temp_path uwsgi;
+    scgi_temp_path scgi;
+    server {{
+        listen 127.0.0.1:{port};
+        root "{public}";
+        location ~ "(?i)^/(?:[a-z0-9_-][a-z0-9_.-]*/)*[a-z0-9_-][a-z0-9_.-]*\.(html|css|js|png|jpe?g|gif|svg|ico|webp)$" {{
+            {symlink_policy}
+        }}
+        location = / {{ rewrite ^ /index.html last; }}
+        location / {{ return 403; }}
+    }}
+}}
+"#,
+                        symlink_policy = if cfg!(windows) {
+                            ""
+                        } else {
+                            "disable_symlinks on;"
+                        }
+                    ),
+                )?;
+                let config = web_path(&config)?;
+                let args = ["-p", &prefix, "-c", &config, "-e", "stderr"];
+                validate_web_config(&record.executable, data, &args, &["-t"]).await?;
+                manifest.args = args.into_iter().map(LaunchArg::from).collect();
+            }
             "apache" if cfg!(windows) => {
                 if !manifest.args.is_empty() {
                     bail!("Apache static projects use generated configuration");
@@ -45,10 +105,7 @@ impl RuntimeManager {
                 let server_root = bin
                     .parent()
                     .context("Apache installation root unavailable")?;
-                let public = dunce::canonicalize(manifest.root.join("public"))?;
-                if !public.starts_with(dunce::canonicalize(&manifest.root)?) {
-                    bail!("Apache public directory escapes the project root");
-                }
+                let public = web_public(&manifest.root)?;
                 let quote = |path: &Path| -> Result<String> {
                     let path = path.to_str().context("Apache requires UTF-8 paths")?;
                     if path.contains(['"', '\n', '\r', '$']) {
@@ -92,13 +149,14 @@ DocumentRoot {public}
                     .to_str()
                     .context("Invalid Apache config path")?
                     .replace('\\', "/");
-                manifest.args = vec![
-                    "-X".into(),
-                    "-f".into(),
-                    config.into(),
-                    "-C".into(),
-                    LaunchArg::template("Listen 127.0.0.1:${DOCKON_PORT}"),
-                ];
+                let listen = format!("Listen 127.0.0.1:{port}");
+                let args = ["-f", &config, "-C", &listen];
+                validate_web_config(&record.executable, data, &args, &["-t"]).await?;
+                manifest.args = args
+                    .into_iter()
+                    .chain(["-X"])
+                    .map(LaunchArg::from)
+                    .collect();
             }
             "node" => {
                 set(&mut environment, "npm_config_cache", &cache.join("npm"));
@@ -233,4 +291,87 @@ DocumentRoot {public}
         }
         Ok((manifest, environment))
     }
+}
+
+fn web_public(root: &Path) -> Result<std::path::PathBuf> {
+    let root = dunce::canonicalize(root)?;
+    let public = dunce::canonicalize(root.join("public"))?;
+    if !public.is_dir() || !public.starts_with(&root) || public == root {
+        bail!("The public directory must be inside the project root");
+    }
+    Ok(public)
+}
+
+fn web_path(path: &Path) -> Result<String> {
+    let path = path.to_str().context("Web server requires UTF-8 paths")?;
+    if path.contains(['"', '\n', '\r', '$']) {
+        bail!("Unsupported character in web server configuration path");
+    }
+    Ok(path.replace('\\', "/"))
+}
+
+#[cfg(windows)]
+fn reject_windows_links(public: &Path) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    let mut directories = vec![public.to_path_buf()];
+    let mut entries = 0;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            entries += 1;
+            if entries > 100_000 {
+                bail!("Nginx public directory exceeds the Windows file inspection limit");
+            }
+            let entry = entry?;
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            if metadata.file_attributes() & 0x400 != 0 {
+                bail!("Nginx public directories on Windows cannot contain filesystem links");
+            }
+            if metadata.is_dir() {
+                directories.push(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn validate_web_config(
+    executable: &Path,
+    directory: &Path,
+    args: &[&str],
+    validation_args: &[&str],
+) -> Result<()> {
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .args(args)
+        .args(validation_args)
+        .current_dir(directory)
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let (status, errors) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut child = command.spawn()?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Web server stderr unavailable")?;
+        let mut errors = Vec::new();
+        stderr.take(8193).read_to_end(&mut errors).await?;
+        if errors.len() > 8192 {
+            bail!("Web server configuration output exceeds the size limit");
+        }
+        Ok::<_, anyhow::Error>((child.wait().await?, errors))
+    })
+    .await
+    .context("Web server configuration validation timed out")??;
+    if !status.success() {
+        let diagnostic = String::from_utf8_lossy(&errors);
+        let diagnostic: String = diagnostic.chars().take(1000).collect();
+        bail!("Web server configuration rejected: {diagnostic}");
+    }
+    Ok(())
 }

@@ -18,20 +18,16 @@ pub struct Capability {
 }
 
 pub async fn capability(engine: ContainerEngine) -> Capability {
-    let result = execute(
-        engine,
-        &[
-            "info".into(),
+    let args = if engine == ContainerEngine::Docker {
+        [
+            "version".into(),
             "--format".into(),
-            if engine == ContainerEngine::Docker {
-                "{{json .ServerVersion}}".into()
-            } else {
-                "json".into()
-            },
-        ],
-        8,
-    )
-    .await;
+            "{{.Server.Version}}".into(),
+        ]
+    } else {
+        ["info".into(), "--format".into(), "json".into()]
+    };
+    let result = execute(engine, &args, 10).await;
     match result {
         Ok(detail) => Capability {
             engine,

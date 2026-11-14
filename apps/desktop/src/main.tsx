@@ -117,6 +117,7 @@ function App() {
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
   const [wizard, setWizard] = useState(false);
+  const [serverSwitch, setServerSwitch] = useState("");
   const [path, setPath] = useState("");
   const [events, setEvents] = useState<Event[]>([]);
   const [selected, setSelected] = useState("");
@@ -148,9 +149,9 @@ function App() {
   const runtimes = useQuery({
     queryKey: ["runtimes"],
     queryFn: () =>
-      request<{ id: string; runtime: string; version: string }[]>(
-        "runtime_installed",
-      ),
+      request<
+        { id: string; runtime: string; version: string; platform: string }[]
+      >("runtime_installed"),
     enabled: connected,
   });
   useEffect(() => {
@@ -196,7 +197,11 @@ function App() {
       params: object;
     }) => {
       const reply = await request<Operation>(method, params);
-      if (method === "start" || method === "stop") {
+      if (
+        method === "start" ||
+        method === "stop" ||
+        method === "project_switch_static_server"
+      ) {
         for (let attempt = 0; attempt < 1800; attempt++) {
           const operation = await request<Operation>("operation", {
             id: reply.id,
@@ -213,6 +218,7 @@ function App() {
     onSuccess: () => {
       setError("");
       setImporting(false);
+      setServerSwitch("");
       cache.invalidateQueries({ queryKey: ["projects"] });
     },
     onError: (e) => setError(String(e)),
@@ -465,6 +471,26 @@ function App() {
                       <p className="project-error">{project.error}</p>
                     )}
                     <div className="card-actions">
+                      {["RUNNING", "STOPPED"].includes(project.state) &&
+                        !project.manifest.services?.length &&
+                        runtimes.data?.some(
+                          (runtime) =>
+                            runtime.id ===
+                              project.manifest.runtime?.installation_id &&
+                            ["apache", "nginx"].includes(runtime.runtime),
+                        ) && (
+                          <Button
+                            disabled={action.isPending}
+                            onClick={() => {
+                              setError("");
+                              setServerSwitch(project.manifest.id);
+                            }}
+                          >
+                            {lang === "tr"
+                              ? "Sunucuyu değiştir"
+                              : "Switch server"}
+                          </Button>
+                        )}
                       <Button
                         variant={
                           ["RUNNING", "DEGRADED"].includes(project.state)
@@ -594,6 +620,63 @@ function App() {
         </footer>
       </main>
       {wizard && <ProjectWizard lang={lang} onClose={() => setWizard(false)} />}
+      {serverSwitch && (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={lang === "tr" ? "Sunucuyu değiştir" : "Switch server"}
+          >
+            <h2>{lang === "tr" ? "Sunucuyu değiştir" : "Switch server"}</h2>
+            <p>
+              {lang === "tr"
+                ? "Statik site public klasöründen sunulur. Çalışan projede yerel port değişebilir. Sabit portlu projeyi önce durdur."
+                : "The static site serves the public directory. Switching a running project may change its local port. Stop fixed-port projects first."}
+            </p>
+            <p>
+              {lang === "tr"
+                ? "Bu statik profiller .htaccess kurallarını uygulamaz. Yeniden yazma, yönlendirme ve erişim kuralları bu geçişle taşınmaz."
+                : "These static profiles do not apply .htaccess rules. Rewrite, redirect and access rules must be configured separately."}
+            </p>
+            {error && <p role="alert">{error}</p>}
+            {runtimes.data
+              ?.filter(
+                (runtime) =>
+                  (runtime.runtime === "nginx" ||
+                    (runtime.runtime === "apache" &&
+                      runtime.platform.startsWith("windows-"))) &&
+                  runtime.id !==
+                    items.find(
+                      (project) => project.manifest.id === serverSwitch,
+                    )?.manifest.runtime?.installation_id,
+              )
+              .map((runtime) => (
+                <Button
+                  key={runtime.id}
+                  disabled={action.isPending}
+                  onClick={() =>
+                    action.mutate({
+                      method: "project_switch_static_server",
+                      params: {
+                        id: serverSwitch,
+                        runtime_installation: runtime.id,
+                      },
+                    })
+                  }
+                >
+                  {runtime.runtime} {runtime.version}
+                </Button>
+              ))}
+            <Button
+              disabled={action.isPending}
+              onClick={() => setServerSwitch("")}
+            >
+              {t.cancel}
+            </Button>
+          </section>
+        </div>
+      )}
       {importing && (
         <div className="modal-backdrop">
           <form

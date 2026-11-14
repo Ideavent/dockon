@@ -230,6 +230,9 @@ async fn serve(
                 let manifest=dockon_runtime_manager::projects::import(&state.runtimes,&id,&name,&root,&runtime_installation,&profile).await?;
                 Response::success(state.projects.register(manifest).await?)
             },
+            Command::ProjectSwitchStaticServer { id, runtime_installation } => Response::success(
+                state.projects.submit_static_switch(id, runtime_installation).await?
+            ),
             Command::List => Response::success(state.projects.list().await?),
             Command::Register { manifest_path } => Response::success(state.projects.register(Manifest::read(&manifest_path)?).await?),
             Command::Start { id } => Response::success(state.projects.submit(id, true).await?),

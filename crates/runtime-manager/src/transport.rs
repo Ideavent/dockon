@@ -26,6 +26,7 @@ pub fn allowed(url: &Url) -> bool {
                     | "objects.githubusercontent.com"
                     | "raw.githubusercontent.com"
                     | "www.apachelounge.com"
+                    | "nginx.org"
             )
         )
 }

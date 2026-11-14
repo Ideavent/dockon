@@ -8,6 +8,10 @@ const APACHE_VERSION: &str = "2.4.71-261112";
 const APACHE_URL: &str =
     "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.71-261112-Win64-VS18.zip";
 const APACHE_SHA512: &str = "CA0EB9067369D4E4A596A5ED7E31D53BEE70F2524B1A671AA70CC0E8E07C838726B4CD6B22249FF3180171B7B8DD011DCF44DFA38CE5005373878635EF8894F9";
+const NGINX_VERSION: &str = "1.31.8";
+const NGINX_URL: &str = "https://nginx.org/download/nginx-1.31.8.zip";
+// Release signature checked with the publisher's D6786CE303D9A9022998DC6CC8464D549AF75C0A key.
+const NGINX_SHA512: &str = "12FF367208206B270E6E0FFDC979B6625502B3537613A1F8F6B2AA61FF0CBBC81682CB16DE9C2329FD4D1062A60AEC6CEEACEE5C3BFBDD79D14C94EEBD017DBD";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artifact {
@@ -72,6 +76,21 @@ pub async fn versions(http: &Transport, runtime: &str) -> Result<(Vec<Version>, 
             "Apache Lounge Win64. Requires the Microsoft Visual C++ Redistributable."
         } else {
             "Managed Apache is available on Windows x64. Select a system Apache executable on this platform."
+        };
+        return Ok((versions, Some(note.into())));
+    }
+    if runtime == "nginx" {
+        let versions = cfg!(all(target_os = "windows", target_arch = "x86_64"))
+            .then(|| Version {
+                version: NGINX_VERSION.into(),
+                support: "publisher_release".into(),
+            })
+            .into_iter()
+            .collect();
+        let note = if cfg!(windows) {
+            "The publisher classifies Nginx for Windows as beta. The managed package targets Windows x64."
+        } else {
+            "Select a system Nginx executable on this platform."
         };
         return Ok((versions, Some(note.into())));
     }
@@ -277,6 +296,15 @@ pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<
             value.hash = file["sha256"].as_str().context("Missing Go digest")?.into();
             value.prefix = "go".into();
             value.executable = if os == "win" { "bin/go.exe" } else { "bin/go" }.into();
+        }
+        "nginx" => {
+            if (os, arch) != ("win", "x64") || version != NGINX_VERSION {
+                bail!("This managed Nginx package is only available for Windows x64");
+            }
+            value.url = NGINX_URL.into();
+            value.hash = NGINX_SHA512.into();
+            value.hash_kind = "sha512".into();
+            value.executable = format!("nginx-{version}/nginx.exe");
         }
         "apache" => {
             if (os, arch) != ("win", "x64") || version != APACHE_VERSION {

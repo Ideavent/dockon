@@ -539,6 +539,10 @@ pub enum Command {
         runtime_installation: String,
         profile: String,
     },
+    ProjectSwitchStaticServer {
+        id: String,
+        runtime_installation: String,
+    },
     List,
     Register {
         manifest_path: PathBuf,

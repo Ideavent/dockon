@@ -289,6 +289,121 @@ impl Orchestrator {
         });
         Ok(reply)
     }
+    pub async fn submit_static_switch(
+        self: &Arc<Self>,
+        id: String,
+        installation_id: String,
+    ) -> Result<Operation> {
+        self.entry(&id).await?;
+        let operation = uuid::Uuid::new_v4().to_string();
+        self.store
+            .begin(&operation, &id, "switch_static_server")
+            .await?;
+        let reply = self.store.operation(&operation).await?;
+        let state = self.clone();
+        tokio::spawn(async move {
+            let error = state
+                .switch_static_server(&id, &installation_id)
+                .await
+                .err()
+                .map(|error| format!("{error:#}"));
+            if let Err(error) = state.store.finish(&operation, error.as_deref()).await {
+                state.events.lock().await.push(
+                    &id,
+                    "error",
+                    &format!("Operation journal failed: {error}"),
+                );
+            }
+        });
+        Ok(reply)
+    }
+    async fn switch_static_server(&self, id: &str, installation_id: &str) -> Result<Project> {
+        let entry = self.entry(id).await?;
+        let _guard = entry.lifecycle.lock().await;
+        let current = entry.project.read().await.clone();
+        if self.closing.load(Ordering::Acquire) {
+            bail!("Daemon is shutting down");
+        }
+        if !matches!(current.state, State::Running | State::Stopped)
+            || current.manifest.provider != Provider::Native
+            || !current.manifest.services.is_empty()
+            || !current.manifest.args.is_empty()
+        {
+            bail!("Server switching requires a running or stopped native static site without services");
+        }
+        let binding = current
+            .manifest
+            .runtime
+            .as_ref()
+            .context("Select a static web server first")?;
+        let previous = self.runtimes.selected(&binding.installation_id).await?;
+        let next = self.runtimes.selected(installation_id).await?;
+        if !["apache", "nginx"].contains(&previous.runtime.as_str())
+            || !["apache", "nginx"].contains(&next.runtime.as_str())
+        {
+            bail!("Only Apache and Nginx static profiles support this switch");
+        }
+        if previous.id == next.id {
+            return Ok(current);
+        }
+        let selected = dockon_runtime_manager::projects::import(
+            &self.runtimes,
+            id,
+            &current.manifest.name,
+            &current.manifest.root,
+            installation_id,
+            &format!("{}:static", next.runtime),
+        )
+        .await?;
+        let mut manifest = current.manifest.clone();
+        manifest.executable = selected.executable;
+        manifest.runtime = selected.runtime;
+        if current.state == State::Stopped {
+            self.store.update_manifest(&manifest).await?;
+            let mut project = entry.project.write().await;
+            project.manifest = manifest;
+            return Ok(project.clone());
+        }
+        if manifest.port != 0 {
+            bail!("Stop the project before switching a fixed-port static site");
+        }
+        let staging = self
+            .data_dir
+            .join("instances")
+            .join(dockon_core::project_key(id))
+            .join(format!("web-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&staging)?;
+        let (mut candidate, port) = launch(
+            &manifest,
+            self.events.clone(),
+            (&self.containers, &self.ports, &self.runtimes),
+            &staging,
+            id,
+            "web-preview",
+            &BTreeMap::new(),
+        )
+        .await?;
+        if let Err(error) = self.store.update_manifest(&manifest).await {
+            candidate.stop(id).await?;
+            return Err(error);
+        }
+        let mut owned = entry.instance.lock().await;
+        if let Some(previous) = owned.as_mut() {
+            if let Err(error) = previous.stop(id).await {
+                let persistence = self.store.update_manifest(&current.manifest).await;
+                let cleanup = candidate.stop(id).await;
+                persistence.context("Could not restore the previous manifest")?;
+                cleanup.context("Could not stop the candidate web server")?;
+                return Err(error.context("Could not retire the previous web server"));
+            }
+        }
+        let mut project = entry.project.write().await;
+        project.pid = candidate.pid();
+        project.port = Some(port);
+        project.manifest = manifest;
+        *owned = Some(candidate);
+        Ok(project.clone())
+    }
     pub async fn operation(&self, id: &str) -> Result<Operation> {
         self.store.operation(id).await
     }

@@ -39,6 +39,15 @@ impl Store {
             .await?;
         Ok(())
     }
+    pub async fn update_manifest(&self, manifest: &Manifest) -> Result<()> {
+        let result = sqlx::query("UPDATE projects SET manifest=? WHERE id=?")
+            .bind(serde_json::to_string(manifest)?)
+            .bind(&manifest.id)
+            .execute(&self.0)
+            .await?;
+        anyhow::ensure!(result.rows_affected() == 1, "Project no longer exists");
+        Ok(())
+    }
     pub async fn begin(&self, id: &str, project: &str, action: &str) -> Result<()> {
         sqlx::query("INSERT INTO operations(id,project_id,action,status) VALUES (?,?,?,'running')")
             .bind(id)

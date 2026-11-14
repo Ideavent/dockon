@@ -1,12 +1,12 @@
 # Remaining Sprint 03 web-server work
 
-This document records the remaining implementation boundary. Nginx/Apache switching is not implemented and must not be presented as a supported feature yet.
+Apache and Nginx static profiles support server switching. A running site with a dynamic port stages the candidate on a separate loopback port, then switches after HTTP readiness. A fixed-port site must be stopped first.
 
 Dockon uses Apache Lounge for managed Windows x64 installs. The catalog pins a release and the publisher's SHA-512 digest. Updating that release requires updating the pin. PGP verification is pending. Users can also register an existing Apache executable by absolute path. The Windows static site profile expects an Apache binary with the standard `bin`, `modules` and `conf` layout. Apache Lounge publishes release checksums and PGP signatures. [Apache Windows documentation](https://httpd.apache.org/docs/current/platform/windows.html) · [Apache Lounge downloads](https://www.apachelounge.com/download/)
 
-The Windows static profile creates or imports a site with `public/index.html`. Apache serves selected static file types from `public` on loopback with project-specific configuration, PID and error log paths. PHP, FastCGI, `.htaccess` and live frontend switching remain pending. Generate an Apache Docker sample with `scripts/New-SampleManifest.ps1 -ApacheContainer` and import the resulting manifest to run the image's sample site.
+The Windows static profile creates or imports a site with `public/index.html`. Apache serves selected static file types from `public` on loopback with project-specific configuration, PID and error log paths. PHP/FastCGI and execution of `.htaccess` rules remain pending. Generate an Apache Docker sample with `scripts/New-SampleManifest.ps1 -ApacheContainer` and import the resulting manifest to run the image's sample site.
 
-For native Nginx, [official downloads](https://nginx.org/en/download.html) have detached PGP signatures with [published keys](https://nginx.org/en/pgp_keys.html). Do not substitute an unverified download for the checksum-verified installer boundary already implemented. [Nginx documents its Windows build as beta](https://nginx.org/en/docs/windows.html); that limitation belongs in the compatibility UI.
+Dockon pins an official Nginx Windows x64 package by SHA-512. The release signature was checked before recording the digest. Dockon checks the digest during installation. The Windows catalog reports the publisher's beta classification. [Downloads](https://nginx.org/en/download.html) · [Signing keys](https://nginx.org/en/pgp_keys.html) · [Windows documentation](https://nginx.org/en/docs/windows.html)
 
 Native adapters must use private project configuration, logs, PID paths and mutable prefixes without loading or modifying another installed service's default configuration. Use explicit [Nginx prefix/config/test arguments](https://nginx.org/en/docs/switches.html) and [Apache ServerRoot/config/test/foreground arguments](https://httpd.apache.org/docs/current/programs/httpd.html). Supervisor ownership must cover workers as well as the master process.
 
