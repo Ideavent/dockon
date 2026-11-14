@@ -465,7 +465,70 @@ impl Orchestrator {
         )
         .await
     }
+    pub async fn add_database(&self, id: &str, engine: &str) -> Result<Project> {
+        let (image, port, command) = match engine {
+            "mysql" => (
+                dockon_core::MYSQL_IMAGE,
+                3306,
+                vec![
+                    "mysqld",
+                    "--datadir=/dockon-data/mysql",
+                    "--bind-address=0.0.0.0",
+                ],
+            ),
+            "mariadb" => (
+                dockon_core::MARIADB_IMAGE,
+                3306,
+                vec![
+                    "mariadbd",
+                    "--datadir=/dockon-data/mysql",
+                    "--bind-address=0.0.0.0",
+                ],
+            ),
+            "mongo" => (
+                dockon_core::MONGO_IMAGE,
+                27017,
+                vec!["mongod", "--dbpath", "/data/db", "--bind_ip_all"],
+            ),
+            _ => bail!("Unknown database preset"),
+        };
+        self.add_service(id, serde_json::from_value(serde_json::json!({
+            "id": engine, "provider": "container",
+            "container": {"engine": "docker", "image": image, "internal_port": port, "command": command},
+            "health": {"type": "tcp"}, "startup_timeout_seconds": 120
+        }))?).await
+    }
     pub async fn postgres_connection(&self, id: &str) -> Result<serde_json::Value> {
+        self.database_connection(id, "postgres").await
+    }
+    pub async fn database_connection(&self, id: &str, engine: &str) -> Result<serde_json::Value> {
+        let (image, user, database, password_name) = match engine {
+            "postgres" => (
+                dockon_core::POSTGRES_IMAGE,
+                "postgres",
+                "dockon",
+                "postgres-password",
+            ),
+            "mysql" => (
+                dockon_core::MYSQL_IMAGE,
+                "root",
+                "dockon",
+                "database-password",
+            ),
+            "mariadb" => (
+                dockon_core::MARIADB_IMAGE,
+                "root",
+                "dockon",
+                "database-password",
+            ),
+            "mongo" => (
+                dockon_core::MONGO_IMAGE,
+                "dockon",
+                "admin",
+                "database-password",
+            ),
+            _ => bail!("Unknown database preset"),
+        };
         let entry = self.entry(id).await?;
         let _guard = entry.lifecycle.lock().await;
         let project = entry.project.read().await;
@@ -474,31 +537,31 @@ impl Orchestrator {
             .services
             .iter()
             .find(|service| {
-                service.id == "postgres"
+                service.id == engine
                     && service
                         .container
                         .as_ref()
-                        .is_some_and(|container| container.image == dockon_core::POSTGRES_IMAGE)
+                        .is_some_and(|container| container.image == image)
             })
-            .context("Project has no managed PostgreSQL service")?;
+            .context("Project has no matching managed database")?;
         let service = project
             .services
             .iter()
             .find(|service| service.id == spec.id && service.state == State::Running)
-            .context("Start the project's PostgreSQL service first")?;
+            .context("Start the project's database first")?;
         let password_file = self
             .data_dir
             .join("instances")
             .join(dockon_core::project_key(id))
             .join("services")
             .join(dockon_core::project_key(&spec.id))
-            .join("postgres-password");
+            .join(password_name);
         let password = std::fs::read_to_string(password_file)?;
         Ok(serde_json::json!({
             "host": "127.0.0.1",
             "port": service.port,
-            "user": "postgres",
-            "database": "dockon",
+            "user": user,
+            "database": database,
             "password": password
         }))
     }
@@ -542,7 +605,117 @@ impl Orchestrator {
         file.sync_all()?;
         drop(file);
         std::fs::rename(&partial, &destination)?;
+        let digest = dockon_runtime_manager::hash_file(&destination, "sha256")?;
+        std::fs::write(destination.with_extension("sha256"), digest)?;
         Ok(destination)
+    }
+    pub async fn postgres_backups(&self, id: &str) -> Result<Vec<String>> {
+        self.entry(id).await?;
+        let directory = self
+            .data_dir
+            .join("backups")
+            .join(dockon_core::project_key(id));
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut backups = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let Some(name) = entry.file_name().into_string().ok() else {
+                continue;
+            };
+            let uuid = name
+                .strip_prefix("postgres-")
+                .and_then(|name| name.strip_suffix(".sql"));
+            if uuid.is_some_and(|uuid| uuid::Uuid::parse_str(uuid).is_ok())
+                && entry.file_type()?.is_file()
+                && entry.path().with_extension("sha256").is_file()
+            {
+                backups.push(name);
+            }
+        }
+        backups.sort_unstable();
+        Ok(backups)
+    }
+    pub async fn submit_postgres_restore(
+        self: &Arc<Self>,
+        id: String,
+        backup: String,
+    ) -> Result<Operation> {
+        self.entry(&id).await?;
+        let operation = uuid::Uuid::new_v4().to_string();
+        self.store
+            .begin(&operation, &id, "postgres_restore")
+            .await?;
+        let reply = self.store.operation(&operation).await?;
+        let state = self.clone();
+        tokio::spawn(async move {
+            let error = state
+                .restore_postgres(&id, &backup, &operation)
+                .await
+                .err()
+                .map(|error| error.to_string());
+            let _ = state.store.finish(&operation, error.as_deref()).await;
+        });
+        Ok(reply)
+    }
+    async fn restore_postgres(&self, id: &str, backup: &str, operation: &str) -> Result<()> {
+        let entry = self.entry(id).await?;
+        let _guard = entry.lifecycle.lock().await;
+        if self.closing.load(Ordering::Acquire) {
+            bail!("Daemon is shutting down");
+        }
+        let name = backup
+            .strip_prefix("postgres-")
+            .and_then(|name| name.strip_suffix(".sql"))
+            .context("Choose a Dockon PostgreSQL backup filename")?;
+        let uuid = uuid::Uuid::parse_str(name)?;
+        let path = self
+            .data_dir
+            .join("backups")
+            .join(dockon_core::project_key(id))
+            .join(format!("postgres-{uuid}.sql"));
+        let expected = std::fs::read_to_string(path.with_extension("sha256"))?;
+        use std::io::Read;
+        let mut sql = Vec::new();
+        std::fs::File::open(&path)?
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_end(&mut sql)?;
+        use sha2::{Digest, Sha256};
+        if sql.len() > 8 * 1024 * 1024 || format!("{:x}", Sha256::digest(&sql)) != expected {
+            bail!("Backup size or integrity check failed");
+        }
+        let project = entry.project.read().await;
+        if !project.manifest.services.iter().any(|service| {
+            service.id == "postgres"
+                && service
+                    .container
+                    .as_ref()
+                    .is_some_and(|container| container.image == dockon_core::POSTGRES_IMAGE)
+        }) {
+            bail!("Project has no managed PostgreSQL service");
+        }
+        drop(project);
+        let services = entry.services.lock().await;
+        let service = services
+            .iter()
+            .find(|service| service.status.id == "postgres")
+            .context("Start PostgreSQL first")?;
+        let OwnedInstance::Container { process, .. } = &service.instance else {
+            bail!("PostgreSQL restore requires a running Docker service");
+        };
+        let database = format!(
+            "dockon_restore_{}",
+            uuid::Uuid::parse_str(operation)?.simple()
+        );
+        process.postgres_restore_copy(&sql, &database).await?;
+        self.events
+            .lock()
+            .await
+            .push(id, "backup", &format!("Restored database copy {database}"));
+        Ok(())
     }
     async fn add_service(&self, id: &str, service: dockon_core::ServiceSpec) -> Result<Project> {
         let entry = self.entry(id).await?;

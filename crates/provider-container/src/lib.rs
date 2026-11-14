@@ -151,7 +151,14 @@ impl ContainerProvider {
             "--network-alias".into(),
             alias.into(),
             "--mount".into(),
-            format!("type=volume,source={resource},target=/dockon-data"),
+            format!(
+                "type=volume,source={resource},target={}",
+                if spec.image == dockon_core::MONGO_IMAGE {
+                    "/data/db"
+                } else {
+                    "/dockon-data"
+                }
+            ),
             "--publish".into(),
             format!("127.0.0.1:{port}:{}", spec.internal_port),
             "--cap-drop".into(),
@@ -177,13 +184,46 @@ impl ContainerProvider {
                 format!("127.0.0.1:{host_port}:{container_port}"),
             ]);
         }
-        if spec.image == dockon_core::POSTGRES_IMAGE {
+        if [
+            dockon_core::POSTGRES_IMAGE,
+            dockon_core::MYSQL_IMAGE,
+            dockon_core::MARIADB_IMAGE,
+            dockon_core::MONGO_IMAGE,
+        ]
+        .contains(&spec.image.as_str())
+        {
             for capability in ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "FOWNER"] {
                 args.extend(["--cap-add".into(), capability.into()]);
             }
+        }
+        if spec.image == dockon_core::POSTGRES_IMAGE {
             args.extend([
                 "--tmpfs".into(),
                 "/var/run/postgresql:rw,nosuid,nodev,noexec".into(),
+            ]);
+        }
+        if spec.image == dockon_core::MONGO_IMAGE {
+            args.extend([
+                "--tmpfs".into(),
+                "/data/configdb:rw,nosuid,nodev,noexec".into(),
+            ]);
+        }
+        if [dockon_core::MYSQL_IMAGE, dockon_core::MARIADB_IMAGE].contains(&spec.image.as_str()) {
+            args.extend([
+                "--tmpfs".into(),
+                "/var/run/mysqld:rw,nosuid,nodev,noexec".into(),
+            ]);
+        }
+        if [
+            dockon_core::MYSQL_IMAGE,
+            dockon_core::MARIADB_IMAGE,
+            dockon_core::MONGO_IMAGE,
+        ]
+        .contains(&spec.image.as_str())
+        {
+            args.extend([
+                "--tmpfs".into(),
+                "/tmp:rw,nosuid,nodev,noexec,mode=1777".into(),
             ]);
         }
         args.extend([
@@ -192,9 +232,9 @@ impl ContainerProvider {
             "--env".into(),
             "HOST=0.0.0.0".into(),
         ]);
-        for (key, value) in environment {
+        for key in environment.keys() {
             args.push("--env".into());
-            args.push(format!("{key}={value}"));
+            args.push(key.clone());
         }
         if let Some(entrypoint) = &spec.entrypoint {
             args.extend(["--entrypoint".into(), entrypoint.clone()]);
@@ -202,7 +242,10 @@ impl ContainerProvider {
         args.extend(self.labels(project, owner));
         args.push(spec.image.clone());
         args.extend(spec.command.clone());
-        let id = execute(spec.engine, &args, 30).await?.trim().to_owned();
+        let id = execute_with_options(spec.engine, &args, 30, None, Some(environment))
+            .await?
+            .trim()
+            .to_owned();
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             bail!("Invalid container ID from provider");
         }
@@ -273,6 +316,57 @@ pub struct ContainerInstance {
     provider: ContainerProvider,
 }
 impl ContainerInstance {
+    pub async fn postgres_restore_copy(&self, sql: &[u8], database: &str) -> Result<()> {
+        if !database
+            .strip_prefix("dockon_restore_")
+            .is_some_and(|suffix| {
+                suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            bail!("Invalid restore database name");
+        }
+        let container = self
+            .provider
+            .inspect(self.engine, "container", &self.id)
+            .await?;
+        self.provider
+            .check_labels(&container["Config"]["Labels"], &self.project, &self.owner)?;
+        let base = [
+            "exec".into(),
+            "--user".into(),
+            "postgres".into(),
+            self.id.clone(),
+        ];
+        let mut create = base.to_vec();
+        create.extend(["createdb".into(), "--no-password".into(), database.into()]);
+        execute(self.engine, &create, 10).await?;
+        let restore = [
+            "exec".into(),
+            "-i".into(),
+            "--user".into(),
+            "postgres".into(),
+            self.id.clone(),
+            "psql".into(),
+            "-X".into(),
+            "--no-password".into(),
+            "--single-transaction".into(),
+            "--set=ON_ERROR_STOP=1".into(),
+            format!("--dbname={database}"),
+            "--file=-".into(),
+        ];
+        if execute_with_options(self.engine, &restore, 60, Some(sql), None)
+            .await
+            .is_err()
+        {
+            let mut rollback = base.to_vec();
+            rollback.extend(["dropdb".into(), "--no-password".into(), database.into()]);
+            execute(self.engine, &rollback, 10)
+                .await
+                .context("Restore failed and the copy could not be removed")?;
+            bail!("PostgreSQL rejected the backup. The original database is available");
+        }
+        Ok(())
+    }
     pub async fn postgres_dump(&self) -> Result<String> {
         let container = self
             .provider
@@ -296,28 +390,26 @@ impl ContainerInstance {
         )
         .await
     }
-    pub async fn postgres_ready(&self) -> Result<bool> {
+    pub async fn database_ready(&self, image: &str) -> Result<Option<bool>> {
+        let probe: &[&str] = match image {
+            dockon_core::POSTGRES_IMAGE => &["pg_isready", "-h", "127.0.0.1", "-t", "1"],
+            dockon_core::MYSQL_IMAGE => &["mysqladmin", "-h", "127.0.0.1", "ping", "--silent"],
+            dockon_core::MARIADB_IMAGE => &["mariadb-admin", "-h", "127.0.0.1", "ping", "--silent"],
+            dockon_core::MONGO_IMAGE => &[
+                "sh", "-c",
+                "test \"$(cat /proc/1/comm)\" = mongod && exec mongosh --quiet --eval 'db.adminCommand({ping:1})' mongodb://127.0.0.1:27017/admin",
+            ],
+            _ => return Ok(None),
+        };
         let container = self
             .provider
             .inspect(self.engine, "container", &self.id)
             .await?;
         self.provider
             .check_labels(&container["Config"]["Labels"], &self.project, &self.owner)?;
-        Ok(execute(
-            self.engine,
-            &[
-                "exec".into(),
-                self.id.clone(),
-                "pg_isready".into(),
-                "-h".into(),
-                "127.0.0.1".into(),
-                "-t".into(),
-                "1".into(),
-            ],
-            4,
-        )
-        .await
-        .is_ok())
+        let mut args = vec!["exec".into(), self.id.clone()];
+        args.extend(probe.iter().map(|argument| (*argument).to_owned()));
+        Ok(Some(execute(self.engine, &args, 6).await.is_ok()))
     }
     pub async fn running(&self) -> Result<bool> {
         let value = self
@@ -381,6 +473,15 @@ fn local_docker_endpoint(endpoint: &str) -> bool {
     endpoint.starts_with("unix:///") || endpoint.starts_with("npipe:////./pipe/")
 }
 async fn execute(engine: ContainerEngine, args: &[String], timeout: u64) -> Result<String> {
+    execute_with_options(engine, args, timeout, None, None).await
+}
+async fn execute_with_options(
+    engine: ContainerEngine,
+    args: &[String],
+    timeout: u64,
+    input: Option<&[u8]>,
+    environment: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<String> {
     if engine == ContainerEngine::Docker {
         let endpoint = if std::env::var_os("DOCKER_CONTEXT").is_none() {
             match std::env::var("DOCKER_HOST") {
@@ -395,6 +496,8 @@ async fn execute(engine: ContainerEngine, args: &[String], timeout: u64) -> Resu
                     ],
                     8,
                     false,
+                    None,
+                    None,
                 )
                 .await?
                 .trim()
@@ -411,6 +514,8 @@ async fn execute(engine: ContainerEngine, args: &[String], timeout: u64) -> Resu
                 ],
                 8,
                 false,
+                None,
+                None,
             )
             .await?
             .trim()
@@ -421,25 +526,34 @@ async fn execute(engine: ContainerEngine, args: &[String], timeout: u64) -> Resu
         }
         let mut scoped = vec!["--host".into(), endpoint];
         scoped.extend_from_slice(args);
-        return execute_raw(engine, &scoped, timeout, true).await;
+        return execute_raw(engine, &scoped, timeout, true, input, environment).await;
     }
     if std::env::var_os("CONTAINER_CONNECTION").is_some()
         || std::env::var("CONTAINER_HOST").is_ok_and(|host| !host.starts_with("unix:///"))
     {
         bail!("Remote Podman connections are not supported by this local provider");
     }
-    execute_raw(engine, args, timeout, false).await
+    execute_raw(engine, args, timeout, false, input, environment).await
 }
 async fn execute_raw(
     engine: ContainerEngine,
     args: &[String],
     timeout: u64,
     scoped: bool,
+    input: Option<&[u8]>,
+    environment: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Result<String> {
     let mut command = Command::new(engine.executable());
+    if let Some(environment) = environment {
+        command.envs(environment);
+    }
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -456,10 +570,21 @@ async fn execute_raw(
         let mut child = command.spawn().context("Container provider unavailable")?;
         let stdout = child.stdout.take().context("Provider stdout unavailable")?;
         let stderr = child.stderr.take().context("Provider stderr unavailable")?;
-        let (stdout, stderr, status) =
-            tokio::try_join!(read_limited(stdout), read_limited(stderr), async {
-                Ok::<_, anyhow::Error>(child.wait().await?)
-            })?;
+        let stdin = child.stdin.take();
+        let write_input = async {
+            if let (Some(mut stdin), Some(bytes)) = (stdin, input) {
+                use tokio::io::AsyncWriteExt;
+                stdin.write_all(bytes).await?;
+                stdin.shutdown().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        };
+        let (stdout, stderr, status, ()) = tokio::try_join!(
+            read_limited(stdout),
+            read_limited(stderr),
+            async { Ok::<_, anyhow::Error>(child.wait().await?) },
+            write_input
+        )?;
         Ok::<_, anyhow::Error>((stdout, stderr, status))
     })
     .await

@@ -119,6 +119,9 @@ pub struct ContainerSpec {
     pub entrypoint: Option<String>,
 }
 pub const POSTGRES_IMAGE: &str = "docker.io/library/postgres@sha256:d3244e8ce3f165ee3c93d9c4a4b1d0fe48b3a89e2287b717fdcbbde92d405065";
+pub const MYSQL_IMAGE: &str = "docker.io/library/mysql@sha256:a81d043930e51745522bd5c430961cf8286f0a23f0a9a2a6e0108f7ea71b0902";
+pub const MARIADB_IMAGE: &str = "docker.io/library/mariadb@sha256:d36f18d65a0459510b8b0f643b226a6d299e3206486e2b64ff20754a6d291707";
+pub const MONGO_IMAGE: &str = "docker.io/library/mongo@sha256:d97fea17ccb8d004cd137be8dab54d70d0df11be69c9f422aefe4484c8414ab7";
 impl ContainerSpec {
     pub fn validate(&self) -> Result<()> {
         if self
@@ -564,11 +567,26 @@ pub enum Command {
     ProjectAddPostgres {
         id: String,
     },
+    ProjectAddDatabase {
+        id: String,
+        engine: String,
+    },
     PostgresConnection {
         id: String,
     },
+    DatabaseConnection {
+        id: String,
+        engine: String,
+    },
     PostgresBackup {
         id: String,
+    },
+    PostgresBackups {
+        id: String,
+    },
+    PostgresRestore {
+        id: String,
+        backup: String,
     },
     List,
     Register {

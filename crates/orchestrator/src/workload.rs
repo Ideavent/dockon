@@ -109,8 +109,19 @@ pub(crate) async fn launch(
             );
             let smtp = spec.smtp_port.map(|_| ports.reserve(0)).transpose()?;
             let mut environment = environment.clone();
-            if spec.image == dockon_core::POSTGRES_IMAGE {
-                let path = data_dir.join("postgres-password");
+            let password_key = match spec.image.as_str() {
+                dockon_core::POSTGRES_IMAGE => Some("POSTGRES_PASSWORD"),
+                dockon_core::MYSQL_IMAGE => Some("MYSQL_ROOT_PASSWORD"),
+                dockon_core::MARIADB_IMAGE => Some("MARIADB_ROOT_PASSWORD"),
+                dockon_core::MONGO_IMAGE => Some("MONGO_INITDB_ROOT_PASSWORD"),
+                _ => None,
+            };
+            if let Some(password_key) = password_key {
+                let path = data_dir.join(if spec.image == dockon_core::POSTGRES_IMAGE {
+                    "postgres-password"
+                } else {
+                    "database-password"
+                });
                 let password = match std::fs::read_to_string(&path) {
                     Ok(password) => password,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -130,9 +141,23 @@ pub(crate) async fn launch(
                     }
                     Err(error) => return Err(error.into()),
                 };
-                environment.insert("POSTGRES_PASSWORD".into(), password);
+                environment.insert(password_key.into(), password);
+            }
+            if spec.image == dockon_core::POSTGRES_IMAGE {
                 environment.insert("POSTGRES_DB".into(), "dockon".into());
                 environment.insert("PGDATA".into(), "/dockon-data/postgres".into());
+            }
+            if spec.image == dockon_core::MYSQL_IMAGE {
+                environment.insert("MYSQL_DATABASE".into(), "dockon".into());
+                environment.insert("MYSQL_ROOT_HOST".into(), "%".into());
+            }
+            if spec.image == dockon_core::MARIADB_IMAGE {
+                environment.insert("MARIADB_DATABASE".into(), "dockon".into());
+                environment.insert("MARIADB_ROOT_HOST".into(), "%".into());
+            }
+            if spec.image == dockon_core::MONGO_IMAGE {
+                environment.insert("MONGO_INITDB_ROOT_USERNAME".into(), "dockon".into());
+                environment.insert("HOME".into(), "/tmp".into());
             }
             OwnedInstance::Container {
                 process: containers
@@ -179,12 +204,8 @@ async fn wait_ready(manifest: &Manifest, instance: &mut OwnedInstance, port: u16
             bail!("Workload exited before readiness");
         }
         let ready = if let OwnedInstance::Container { process, .. } = instance {
-            if manifest
-                .container
-                .as_ref()
-                .is_some_and(|spec| spec.image == dockon_core::POSTGRES_IMAGE)
-            {
-                Some(process.postgres_ready().await?)
+            if let Some(spec) = &manifest.container {
+                process.database_ready(&spec.image).await?
             } else {
                 None
             }

@@ -48,7 +48,12 @@ type Project = {
   services?: { id: string; state: string; port: number; smtp_port?: number }[];
 };
 type Event = { seq: number; project_id: string; kind: string; message: string };
-type Operation = { id: string; status: string; error: string | null };
+type Operation = {
+  id: string;
+  action?: string;
+  status: string;
+  error: string | null;
+};
 const words = {
   tr: {
     projects: "Projeler",
@@ -119,20 +124,33 @@ function App() {
   const [wizard, setWizard] = useState(false);
   const [serverSwitch, setServerSwitch] = useState("");
   const connectionDetails = useMutation({
-    mutationFn: (id: string) =>
+    mutationFn: ({ id, engine }: { id: string; engine: string }) =>
       request<{
         host: string;
         port: number;
         user: string;
         database: string;
         password: string;
-      }>("postgres_connection", { id }),
+      }>("database_connection", { id, engine }),
     onError: (error) => setError(String(error)),
   });
   const postgresBackup = useMutation({
     mutationFn: (id: string) => request<string>("postgres_backup", { id }),
+    onSuccess: () =>
+      cache.invalidateQueries({ queryKey: ["postgres-backups"] }),
     onError: (error) => setError(String(error)),
   });
+  const postgresBackups = useQuery({
+    queryKey: ["postgres-backups", connectionDetails.variables?.id],
+    queryFn: () =>
+      request<string[]>("postgres_backups", {
+        id: connectionDetails.variables?.id,
+      }),
+    enabled:
+      connectionDetails.isSuccess &&
+      connectionDetails.variables?.engine === "postgres",
+  });
+  const [restoreBackup, setRestoreBackup] = useState("");
   const [path, setPath] = useState("");
   const [events, setEvents] = useState<Event[]>([]);
   const [selected, setSelected] = useState("");
@@ -215,7 +233,8 @@ function App() {
       if (
         method === "start" ||
         method === "stop" ||
-        method === "project_switch_static_server"
+        method === "project_switch_static_server" ||
+        method === "postgres_restore"
       ) {
         for (let attempt = 0; attempt < 1800; attempt++) {
           const operation = await request<Operation>("operation", {
@@ -506,21 +525,52 @@ function App() {
                               : "Add PostgreSQL (Docker)"}
                           </Button>
                         )}
-                      {project.services?.some(
-                        (service) =>
-                          service.id === "postgres" &&
-                          service.state === "RUNNING",
-                      ) && (
-                        <Button
-                          onClick={() =>
-                            connectionDetails.mutate(project.manifest.id)
-                          }
-                        >
-                          {lang === "tr"
-                            ? "PostgreSQL bağlantısı"
-                            : "PostgreSQL connection"}
-                        </Button>
-                      )}
+                      {project.state === "STOPPED" &&
+                        ["mysql", "mariadb", "mongo"]
+                          .filter(
+                            (engine) =>
+                              !project.manifest.services?.some(
+                                (service) => service.id === engine,
+                              ),
+                          )
+                          .map((engine) => (
+                            <Button
+                              key={engine}
+                              disabled={action.isPending}
+                              onClick={() =>
+                                action.mutate({
+                                  method: "project_add_database",
+                                  params: { id: project.manifest.id, engine },
+                                })
+                              }
+                            >
+                              {lang === "tr"
+                                ? `${engine} ekle (Docker)`
+                                : `Add ${engine} (Docker)`}
+                            </Button>
+                          ))}
+                      {project.services
+                        ?.filter(
+                          (service) =>
+                            ["postgres", "mysql", "mariadb", "mongo"].includes(
+                              service.id,
+                            ) && service.state === "RUNNING",
+                        )
+                        .map((service) => (
+                          <Button
+                            key={service.id}
+                            onClick={() =>
+                              connectionDetails.mutate({
+                                id: project.manifest.id,
+                                engine: service.id,
+                              })
+                            }
+                          >
+                            {lang === "tr"
+                              ? `${service.id} bağlantısı`
+                              : `${service.id} connection`}
+                          </Button>
+                        ))}
                       {project.services?.some(
                         (service) =>
                           service.id === "mailpit" &&
@@ -730,7 +780,7 @@ function App() {
             aria-modal="true"
             aria-label="PostgreSQL"
           >
-            <h2>PostgreSQL</h2>
+            <h2>{connectionDetails.variables?.engine}</h2>
             <p>
               {connectionDetails.data.host}:{connectionDetails.data.port} /{" "}
               {connectionDetails.data.database}
@@ -747,18 +797,64 @@ function App() {
               value={connectionDetails.data.password}
               readOnly
             />
-            <Button onClick={() => connectionDetails.reset()}>
+            <Button
+              onClick={() => {
+                connectionDetails.reset();
+                setRestoreBackup("");
+              }}
+            >
               {lang === "tr" ? "Kapat" : "Close"}
             </Button>
-            <Button
-              disabled={postgresBackup.isPending}
-              onClick={() =>
-                postgresBackup.mutate(connectionDetails.variables!)
-              }
-            >
-              {lang === "tr" ? "SQL yedeği oluştur" : "Create SQL backup"}
-            </Button>
-            {postgresBackup.isSuccess && <p>{postgresBackup.data}</p>}
+            {connectionDetails.variables?.engine === "postgres" && (
+              <Button
+                disabled={postgresBackup.isPending}
+                onClick={() =>
+                  postgresBackup.mutate(connectionDetails.variables!.id)
+                }
+              >
+                {lang === "tr" ? "SQL yedeği oluştur" : "Create SQL backup"}
+              </Button>
+            )}
+            {!!postgresBackups.data?.length && (
+              <>
+                <label htmlFor="postgres-backup">
+                  {lang === "tr" ? "SQL yedeği" : "SQL backup"}
+                </label>
+                <select
+                  id="postgres-backup"
+                  value={restoreBackup}
+                  onChange={(event) => setRestoreBackup(event.target.value)}
+                >
+                  <option value="">
+                    {lang === "tr" ? "Yedek seç" : "Choose backup"}
+                  </option>
+                  {postgresBackups.data.map((backup) => (
+                    <option key={backup}>{backup}</option>
+                  ))}
+                </select>
+                <Button
+                  disabled={action.isPending || !restoreBackup}
+                  onClick={() =>
+                    action.mutate({
+                      method: "postgres_restore",
+                      params: {
+                        id: connectionDetails.variables?.id,
+                        backup: restoreBackup,
+                      },
+                    })
+                  }
+                >
+                  {lang === "tr"
+                    ? "Yedeği yeni veritabanına yükle"
+                    : "Restore backup to a new database"}
+                </Button>
+                {action.data?.action === "postgres_restore" &&
+                  action.data.status === "completed" && (
+                    <p>dockon_restore_{action.data.id.replaceAll("-", "")}</p>
+                  )}
+              </>
+            )}
+            {error && <p role="alert">{error}</p>}
           </section>
         </div>
       )}

@@ -977,6 +977,7 @@ dependencies = [
  "dockon-runtime-manager",
  "reqwest 0.12.28",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]
