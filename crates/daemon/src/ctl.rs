@@ -8,6 +8,9 @@ async fn main() -> Result<()> {
         Some("health") => Command::Health,
         Some("capabilities") => Command::Capabilities,
         Some("diagnostics") => Command::Diagnostics,
+        Some("updates") => Command::RuntimeUpdates {
+            runtime: args.get(1).context("Runtime id required")?.clone(),
+        },
         Some("runtimes") => Command::RuntimeInstalled,
         Some("catalog") => Command::RuntimeCatalog {
             runtime: args.get(1).context("Runtime id required")?.clone(),

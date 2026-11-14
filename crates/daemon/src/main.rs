@@ -1,4 +1,6 @@
+mod advisories;
 mod diagnostics;
+mod guardian;
 
 use anyhow::Result;
 use dockon_core::{Command, Manifest, Request, Response};
@@ -214,6 +216,18 @@ async fn serve(
             Command::RouterStop => {state.router.stop().await?;Response::success(state.router.status().await?)},
             Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"http_tcp", "container":"digest_pinned_http_tcp", "ai":"not_implemented"})),
             Command::Diagnostics => Response::success(diagnostics::report(&state).await?),
+            Command::GuardianPreview => Response::success(serde_json::json!({
+                "provider_base_url": guardian::BASE_URL,
+                "context": diagnostics::report(&state).await?
+            })),
+            Command::GuardianModels { api_key } => Response::success(guardian::models(&api_key).await?),
+            Command::GuardianAnalyze { api_key, model, context } => {
+                let approved = diagnostics::report(&state).await?;
+                if context != approved { anyhow::bail!("Diagnostics changed; preview the current context before sending"); }
+                Response::success(guardian::analyze(&api_key, &model, approved).await?)
+            },
+            Command::AdvisoryLookup { ecosystem, package, version } => Response::success(advisories::lookup(&ecosystem, &package, &version).await?),
+            Command::RuntimeUpdates { runtime } => Response::success(state.runtimes.updates(&runtime).await?),
             Command::Capabilities => {
                 let (docker,podman)=tokio::join!(dockon_provider_container::capability(dockon_core::ContainerEngine::Docker),dockon_provider_container::capability(dockon_core::ContainerEngine::Podman));
                 Response::success(serde_json::json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"native":"http","docker":docker,"podman":podman,"ai":"not_implemented"}))

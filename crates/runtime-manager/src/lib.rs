@@ -31,6 +31,16 @@ pub struct SystemCandidate {
     pub executable: PathBuf,
     pub version_checked: bool,
 }
+
+#[derive(Serialize)]
+pub struct RuntimeUpdate {
+    installation_id: String,
+    current_version: String,
+    version: String,
+    same_major: bool,
+    already_installed: bool,
+}
+
 impl RuntimeManager {
     pub fn new(root: PathBuf, store: Store) -> Result<Self> {
         Ok(Self {
@@ -91,6 +101,38 @@ impl RuntimeManager {
                 Err(error)
             }
         }
+    }
+
+    pub async fn updates(&self, runtime: &str) -> Result<serde_json::Value> {
+        let catalog = self.catalog(runtime).await?;
+        let installations: Vec<_> = self
+            .installed()
+            .await?
+            .into_iter()
+            .filter(|entry| entry.runtime == runtime)
+            .collect();
+        let candidates: Vec<_> = catalog
+            .versions
+            .iter()
+            .map(|entry| entry.version.as_str())
+            .collect();
+        let mut updates = Vec::new();
+        for entry in &installations {
+            if let Some((candidate, same_major)) =
+                catalog::suggest_update(&entry.version, &candidates)
+            {
+                updates.push(RuntimeUpdate {
+                    installation_id: entry.id.clone(),
+                    current_version: entry.version.clone(),
+                    version: candidate.to_owned(),
+                    same_major,
+                    already_installed: installations
+                        .iter()
+                        .any(|installed| installed.version == candidate),
+                });
+            }
+        }
+        Ok(serde_json::json!({"cached": catalog.cached, "updates": updates}))
     }
     pub fn discover(&self) -> Vec<SystemCandidate> {
         let mut found = vec![];

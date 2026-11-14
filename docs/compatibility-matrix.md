@@ -13,7 +13,8 @@
 | Scoped hosts / CA trust | Previews, temporary hosts fixtures and native certificate memory-store checks passed; live elevation/trust unverified | Preview/hosts fixture CI passed; live helper unverified; trust unsupported | Preview/hosts fixture CI passed; requires pkexec; live helper unverified; trust unsupported |
 | Python venv / concrete Rust toolchain | Explicit system import, isolated environment/build and HTTP profile tests passed locally and in CI | Explicit system import, isolated environment/build and HTTP profile CI passed | Explicit system import, isolated environment/build and HTTP profile CI passed |
 | Podman generic provider | Unavailable, unverified | Unverified | Unverified |
-| Managed DB catalog, mail, AI | Not implemented | Not implemented | Not implemented |
+| Managed Docker databases, Redis and Mailpit | PostgreSQL, MySQL, MariaDB, MongoDB and Redis persistence, Mailpit delivery and PostgreSQL backup/restore verified locally | Presets unverified | Generic Docker provider verified in CI. Managed presets unverified |
+| Windows x64 installer | Unsigned NSIS package built and release WebView2 smoke passed. Installer lifecycle CI configured | — | — |
 | Signed installer/updater | Not implemented | Not implemented | Not implemented |
 
 CI configuration alone is not evidence that remote platform builds passed.

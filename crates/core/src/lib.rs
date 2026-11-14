@@ -524,6 +524,23 @@ pub enum Command {
     Health,
     Capabilities,
     Diagnostics,
+    GuardianPreview,
+    GuardianModels {
+        api_key: String,
+    },
+    GuardianAnalyze {
+        api_key: String,
+        model: String,
+        context: serde_json::Value,
+    },
+    AdvisoryLookup {
+        ecosystem: String,
+        package: String,
+        version: String,
+    },
+    RuntimeUpdates {
+        runtime: String,
+    },
     RuntimeCatalog {
         runtime: String,
     },

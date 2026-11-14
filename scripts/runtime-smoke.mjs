@@ -171,6 +171,14 @@ try {
     const cached = await h.call("runtime_catalog", { runtime: "node" });
     assert.equal(cached.cached, true);
     assert.equal(cached.versions[0].version, catalog.versions[0].version);
+    const upgrades = await h.call("runtime_updates", { runtime: "node" });
+    assert.equal(upgrades.cached, true);
+    for (const upgrade of upgrades.updates) {
+      assert.equal(upgrade.installation_id, installed.id);
+      assert.equal(upgrade.current_version, installed.version);
+      assert.ok(cached.versions.some((candidate) => candidate.version === upgrade.version));
+      assert.notEqual(upgrade.version, installed.version);
+    }
     assert.ok(
       (await h.call("runtime_installed")).some((v) => v.id === installed.id),
     );

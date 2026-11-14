@@ -57,9 +57,47 @@ fn node_platform() -> Result<(&'static str, &'static str)> {
     };
     Ok((os, arch))
 }
+fn parse_version(value: &str) -> Option<semver::Version> {
+    semver::Version::parse(value.trim_start_matches('v').trim_start_matches("go")).ok()
+}
+
+pub(crate) fn suggest_update<'a>(current: &str, candidates: &[&'a str]) -> Option<(&'a str, bool)> {
+    let current = parse_version(current)?;
+    candidates
+        .iter()
+        .filter_map(|&label| {
+            let version = parse_version(label)?;
+            if !version.pre.is_empty() || version.cmp_precedence(&current).is_le() {
+                return None;
+            }
+            Some((version.major == current.major, version, label))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp_precedence(&b.1)))
+        .map(|(same_major, _, label)| (label, same_major))
+}
+
+#[cfg(test)]
+#[test]
+fn prefers_newest_stable_update_within_current_major() {
+    assert_eq!(
+        suggest_update(
+            "v22.9.0",
+            &["22.9.0+metadata", "22.10.0", "22.11.0-rc.1", "24.0.0"]
+        ),
+        Some(("22.10.0", true))
+    );
+    assert_eq!(
+        suggest_update("go1.25.1", &["1.25.0", "2.0.0"]),
+        Some(("2.0.0", false))
+    );
+    assert_eq!(
+        suggest_update("22.9.0", &["22.9.0+metadata", "23.0.0-rc.1"]),
+        None
+    );
+}
+
 fn version_key(value: &str) -> semver::Version {
-    semver::Version::parse(value.trim_start_matches('v').trim_start_matches("go"))
-        .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
+    parse_version(value).unwrap_or_else(|| semver::Version::new(0, 0, 0))
 }
 pub async fn versions(http: &Transport, runtime: &str) -> Result<(Vec<Version>, Option<String>)> {
     if runtime == "apache" {

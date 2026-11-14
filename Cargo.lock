@@ -925,6 +925,8 @@ dependencies = [
  "dockon-runtime-manager",
  "fs2",
  "libc",
+ "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

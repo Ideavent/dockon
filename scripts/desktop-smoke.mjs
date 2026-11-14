@@ -181,6 +181,11 @@ try {
   assert.ok(JSON.parse(reportText).runtimes.installed >= 1);
   assert.doesNotMatch(reportText, /ui-example|wizard-node|executable|password|port|token/i);
   await expect(page.getByRole("button", { name: "JSON indir" })).toBeEnabled();
+  if (process.env.DOCKON_GUARDIAN_PREVIEW === "1") {
+    await page.getByRole("button", { name: "Veriyi önizle", exact: true }).click();
+    await expect(page.getByText("https://ai.ideavent.tr/v1", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Sağlayıcı API anahtarı")).toHaveAttribute("type", "password");
+  }
   await page.getByRole("button", { name: /^Projeler/ }).click();
   console.log(
     "PASS native runtime opt-in and new project wizard with real selected-runtime HTTP server",

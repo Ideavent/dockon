@@ -34,6 +34,16 @@ type Candidate = {
   executable: string;
   version_checked: boolean;
 };
+type RuntimeUpdates = {
+  cached: boolean;
+  updates: {
+    installation_id: string;
+    current_version: string;
+    version: string;
+    same_major: boolean;
+    already_installed: boolean;
+  }[];
+};
 const names: Record<string, string> = {
   node: "Node.js",
   php: "PHP",
@@ -125,6 +135,12 @@ export function RuntimePage({
   const candidates = useQuery({
     queryKey: ["runtime-system"],
     queryFn: () => request<Candidate[]>("runtime_discover"),
+    enabled: false,
+    retry: false,
+  });
+  const updates = useQuery({
+    queryKey: ["runtime-updates", runtime, installed.dataUpdatedAt],
+    queryFn: () => request<RuntimeUpdates>("runtime_updates", { runtime }),
     enabled: false,
     retry: false,
   });
@@ -282,6 +298,36 @@ export function RuntimePage({
         {t.installed}
         <span>{installed.data?.length ?? "—"}</span>
       </div>
+      {installed.data?.some((entry) => entry.runtime === runtime) && (
+        <section className="runtime-catalog">
+          <Button
+            variant="secondary"
+            disabled={!connected || updates.isFetching}
+            onClick={() => void updates.refetch()}
+          >
+            <RefreshCw size={15} />
+            {lang === "tr" ? "Güncellemeleri kontrol et" : "Check for updates"}
+          </Button>
+          {updates.isError && (
+            <p role="alert">{lang === "tr" ? "Güncelleme kontrolü başarısız." : "Update check failed."}</p>
+          )}
+          {updates.data?.cached && <p className="muted">{t.cached}</p>}
+          {updates.data && !updates.data.updates.length && (
+            <p className="muted">
+              {lang === "tr" ? "Katalogda daha yeni kararlı bir sürüm bulunamadı." : "No newer stable version was found in the catalog."}
+            </p>
+          )}
+          {updates.data?.updates.map((update) => (
+            <p key={update.installation_id}>
+              <strong>{update.current_version} → {update.version}</strong>{" · "}
+              {update.same_major
+                ? lang === "tr" ? "Aynı ana sürüm" : "Same major version"
+                : lang === "tr" ? "Ana sürüm değişiyor" : "Major version change"}
+              {update.already_installed && (lang === "tr" ? " · Kurulu" : " · Installed")}
+            </p>
+          ))}
+        </section>
+      )}
       <section className="runtime-list">
         {installed.data?.map((value) => (
           <article className="runtime-item" key={value.id}>
