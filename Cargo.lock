@@ -921,6 +921,7 @@ dependencies = [
  "dockon-orchestrator",
  "dockon-persistence",
  "dockon-provider-container",
+ "dockon-provider-native",
  "dockon-router",
  "dockon-runtime-manager",
  "fs2",

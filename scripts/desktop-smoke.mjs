@@ -59,6 +59,14 @@ try {
   await page
     .getByText("Daemon bağlı", { exact: true })
     .waitFor({ timeout: 15000 });
+  if (process.env.DOCKON_WORKSPACE_SMOKE === "1") {
+    await expect(page.getByText("fixture-project", { exact: true })).toBeVisible();
+    await expect(page.getByText("outside-project", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("nested", { exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Projeyi ayarla", exact: true }).click();
+    await expect(page.getByLabel("Proje adı", { exact: true })).toHaveValue("fixture-project");
+    await page.getByRole("button", { name: "Vazgeç", exact: true }).click();
+  }
   const manifest = join(data, "ui.project.json");
   await writeFile(
     manifest,

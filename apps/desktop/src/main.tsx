@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import "./styles.css";
-import { request, type Reply } from "./ipc/client";
+import { request, waitOperation, type Reply } from "./ipc/client";
 import { RuntimePage } from "./features/runtimes/RuntimePage";
 import { ProjectWizard } from "./features/projects/ProjectWizard";
 import { RouterPage } from "./features/routing/RouterPage";
@@ -126,6 +126,7 @@ function App() {
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
   const [wizard, setWizard] = useState(false);
+  const [folder, setFolder] = useState<{ name: string; path: string }>();
   const [serverSwitch, setServerSwitch] = useState("");
   const connectionDetails = useMutation({
     mutationFn: ({ id, engine }: { id: string; engine: string }) =>
@@ -182,6 +183,24 @@ function App() {
     enabled: connected,
     refetchInterval: 1500,
     retry: false,
+  });
+  const workspace = useQuery({
+    queryKey: ["workspace-folders"],
+    queryFn: () => request<{ root: string; exists: boolean; folders: { name: string; path: string }[] }>("workspace_folders"),
+    enabled: connected,
+    refetchInterval: 2000,
+  });
+  const localServices = useQuery({
+    queryKey: ["local-services"],
+    queryFn: () => request<{ mailpit_available: boolean; mailpit_running: boolean }>("local_services"),
+    enabled: connected,
+    refetchInterval: 2000,
+  });
+  const mailpit = useMutation({
+    mutationFn: (running: boolean) => request("local_services_set", { running }),
+    onError: (error) => setError(String(error)),
+    onSuccess: () => setError(""),
+    onSettled: () => cache.invalidateQueries({ queryKey: ["local-services"] }),
   });
   const runtimes = useQuery({
     queryKey: ["runtimes"],
@@ -263,6 +282,26 @@ function App() {
     onSettled: () => cache.invalidateQueries({ queryKey: ["projects"] }),
   });
   const items = projects.data || [];
+  const nativeProjects = items.filter((project) =>
+    project.manifest.provider !== "container" &&
+    !project.manifest.services?.some((service) => service.provider === "container")
+  );
+  const startable = nativeProjects.filter((project) => ["STOPPED", "FAILED"].includes(project.state));
+  const stoppable = nativeProjects.filter((project) => ["RUNNING", "DEGRADED"].includes(project.state));
+  const bulk = useMutation({
+    mutationFn: async (method: "start" | "stop") => {
+      const targets = method === "start" ? startable : stoppable;
+      const results = await Promise.allSettled(targets.map(async (project) => {
+        const operation = await request<Operation>(method, { id: project.manifest.id });
+        await waitOperation(operation.id);
+      }));
+      const failed = results.flatMap((result, index) =>
+        result.status === "rejected" ? [`${targets[index].manifest.name} · ${result.reason}`] : []
+      );
+      setError(failed.join("\n"));
+    },
+    onSettled: () => cache.invalidateQueries({ queryKey: ["projects"] }),
+  });
   const providers = new Set(
     items.flatMap((project) => [
       project.manifest.provider || "native",
@@ -378,12 +417,18 @@ function App() {
                   <p>{t.subtitle}</p>
                 </div>
                 <div className="heading-actions">
+                  <Button disabled={!connected || !startable.length || bulk.isPending || action.isPending} onClick={() => bulk.mutate("start")}>
+                    <Play size={17} /> {lang === "tr" ? "Hepsini başlat" : "Start all"}
+                  </Button>
+                  <Button disabled={!connected || !stoppable.length || bulk.isPending || action.isPending} onClick={() => bulk.mutate("stop")}>
+                    <Square size={17} /> {lang === "tr" ? "Hepsini durdur" : "Stop all"}
+                  </Button>
                   <Button
                     variant="primary"
                     disabled={
                       !connected || projects.isError || action.isPending
                     }
-                    onClick={() => setWizard(true)}
+                    onClick={() => { setFolder(undefined); setWizard(true); }}
                   >
                     <Plus size={17} />
                     {lang === "tr" ? "Yeni / içe aktar" : "New / import"}
@@ -399,6 +444,47 @@ function App() {
                   </Button>
                 </div>
               </section>
+              {localServices.data?.mailpit_available && (
+                <section className="runtime-catalog">
+                  <h2>{lang === "tr" ? "Yerel servisler" : "Local services"}</h2>
+                  <article className="runtime-item">
+                    <strong>Mailpit</strong>
+                    <span>SMTP 1025 · HTTP 8025</span>
+                    <Button variant="secondary" disabled={mailpit.isPending}
+                      onClick={() => mailpit.mutate(!localServices.data.mailpit_running)}>
+                      {localServices.data.mailpit_running ? t.stop : t.start}
+                    </Button>
+                  </article>
+                </section>
+              )}
+              {workspace.isError && (
+                <p role="alert">{lang === "tr" ? "www klasörü okunamadı." : "Could not read the www folder."}</p>
+              )}
+              {workspace.data && (
+                <section className="runtime-catalog">
+                  <h2>{lang === "tr" ? "www projeleri" : "www projects"}</h2>
+                  <p><code>{workspace.data.root}</code></p>
+                  {!workspace.data.folders.length && <p className="muted">
+                    {lang === "tr" ? "Projeni bu dizinin altında bir klasöre koy." : "Put your project in a folder under this directory."}
+                  </p>}
+                  {workspace.data.folders.map((entry) => {
+                    const registered = projects.data?.some((project) =>
+                      project.manifest.root.replace(/^\\\\\?\\/, "").toLowerCase() === entry.path.toLowerCase()
+                    );
+                    return (
+                      <article className="runtime-item" key={entry.path}>
+                        <FolderGit2 size={18} />
+                        <strong>{entry.name}</strong>
+                        {registered
+                          ? <span>{lang === "tr" ? "Hazır" : "Configured"}</span>
+                          : <Button variant="secondary" onClick={() => { setFolder(entry); setWizard(true); }}>
+                              {lang === "tr" ? "Projeyi ayarla" : "Configure project"}
+                            </Button>}
+                      </article>
+                    );
+                  })}
+                </section>
+              )}
               {!desktop && (
                 <div className="notice">
                   <strong>{t.offline}</strong>
@@ -522,48 +608,6 @@ function App() {
                       <p className="project-error">{project.error}</p>
                     )}
                     <div className="card-actions">
-                      {project.state === "STOPPED" &&
-                        !project.manifest.services?.some(
-                          (service) => service.id === "postgres",
-                        ) && (
-                          <Button
-                            disabled={action.isPending}
-                            onClick={() =>
-                              action.mutate({
-                                method: "project_add_postgres",
-                                params: { id: project.manifest.id },
-                              })
-                            }
-                          >
-                            {lang === "tr"
-                              ? "PostgreSQL ekle (Docker)"
-                              : "Add PostgreSQL (Docker)"}
-                          </Button>
-                        )}
-                      {project.state === "STOPPED" &&
-                        ["mysql", "mariadb", "mongo"]
-                          .filter(
-                            (engine) =>
-                              !project.manifest.services?.some(
-                                (service) => service.id === engine,
-                              ),
-                          )
-                          .map((engine) => (
-                            <Button
-                              key={engine}
-                              disabled={action.isPending}
-                              onClick={() =>
-                                action.mutate({
-                                  method: "project_add_database",
-                                  params: { id: project.manifest.id, engine },
-                                })
-                              }
-                            >
-                              {lang === "tr"
-                                ? `${engine} ekle (Docker)`
-                                : `Add ${engine} (Docker)`}
-                            </Button>
-                          ))}
                       {project.services
                         ?.filter(
                           (service) =>
@@ -603,42 +647,6 @@ function App() {
                           {lang === "tr" ? "Posta kutusunu aç" : "Open inbox"}
                         </Button>
                       )}
-                      {project.state === "STOPPED" &&
-                        !project.manifest.services?.some(
-                          (service) => service.id === "mailpit",
-                        ) && (
-                          <Button
-                            disabled={action.isPending}
-                            onClick={() =>
-                              action.mutate({
-                                method: "project_add_mailpit",
-                                params: { id: project.manifest.id },
-                              })
-                            }
-                          >
-                            {lang === "tr"
-                              ? "Mailpit ekle (Docker)"
-                              : "Add Mailpit (Docker)"}
-                          </Button>
-                        )}
-                      {project.state === "STOPPED" &&
-                        !project.manifest.services?.some(
-                          (service) => service.id === "redis",
-                        ) && (
-                          <Button
-                            disabled={action.isPending}
-                            onClick={() =>
-                              action.mutate({
-                                method: "project_add_redis",
-                                params: { id: project.manifest.id },
-                              })
-                            }
-                          >
-                            {lang === "tr"
-                              ? "Redis ekle (Docker)"
-                              : "Add Redis (Docker)"}
-                          </Button>
-                        )}
                       {["RUNNING", "STOPPED"].includes(project.state) &&
                         runtimes.data?.some(
                           (runtime) =>
@@ -786,7 +794,7 @@ function App() {
           <span>v0.1.0 · {t.foundation}</span>
         </footer>
       </main>
-      {wizard && <ProjectWizard lang={lang} onClose={() => setWizard(false)} />}
+      {wizard && <ProjectWizard lang={lang} folder={folder} onClose={() => setWizard(false)} />}
       {connectionDetails.data && (
         <div className="modal-backdrop">
           <section

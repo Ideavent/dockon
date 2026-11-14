@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../../components/ui/button";
 import { request } from "../../ipc/client";
@@ -16,15 +16,17 @@ type Detection = {
 export function ProjectWizard({
   lang,
   onClose,
+  folder,
 }: {
   lang: "tr" | "en";
   onClose: () => void;
+  folder?: { name: string; path: string };
 }) {
   const tr = lang === "tr";
-  const [mode, setMode] = useState<"create" | "import">("create");
-  const [id, setId] = useState("");
-  const [name, setName] = useState("");
-  const [root, setRoot] = useState("");
+  const [mode, setMode] = useState<"create" | "import">(folder ? "import" : "create");
+  const [id, setId] = useState((folder?.name || "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").slice(0, 63));
+  const [name, setName] = useState(folder?.name || "");
+  const [root, setRoot] = useState(folder?.path || "");
   const [installation, setInstallation] = useState("");
   const [profile, setProfile] = useState("");
   const [phpCgi, setPhpCgi] = useState("");
@@ -35,12 +37,15 @@ export function ProjectWizard({
     queryFn: () => request<Installation[]>("runtime_installed"),
   });
   const detect = useMutation({
-    mutationFn: () => request<Detection>("project_detect", { root }),
+    mutationFn: (path: string) => request<Detection>("project_detect", { root: path }),
     onSuccess: () => {
       setProfile("");
       setInstallation("");
     },
   });
+  useEffect(() => {
+    if (folder) detect.mutate(folder.path);
+  }, [folder]);
   const save = useMutation({
     mutationFn: () =>
       request(mode === "create" ? "project_create" : "project_import", {
@@ -157,7 +162,7 @@ export function ProjectWizard({
             <Button
               type="button"
               disabled={!root || detect.isPending || save.isPending}
-              onClick={() => detect.mutate()}
+              onClick={() => detect.mutate(root)}
             >
               {tr ? "Proje türünü algıla" : "Detect project type"}
             </Button>

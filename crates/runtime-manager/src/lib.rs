@@ -173,6 +173,37 @@ impl RuntimeManager {
         runtime: &str,
         executable: &Path,
     ) -> Result<RuntimeInstallation> {
+        self.register_executable(runtime, executable, false).await
+    }
+
+    pub async fn register_bundled_web(&self, directory: &Path) -> Result<()> {
+        let _guard = self.install_lock.lock().await;
+        let installed = self.installed().await?;
+        for (runtime, relative) in [
+            ("apache", "bin/apache/bin/httpd.exe"),
+            ("php", "bin/php/php.exe"),
+            ("php-cgi", "bin/php/php-cgi.exe"),
+        ] {
+            let executable = directory.join(relative);
+            if executable.is_file()
+                && !installed.iter().any(|record| {
+                    record.runtime == runtime
+                        && record.source == "dockon_bundle"
+                        && record.executable == executable
+                })
+            {
+                self.register_executable(runtime, &executable, true).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn register_executable(
+        &self,
+        runtime: &str,
+        executable: &Path,
+        bundled: bool,
+    ) -> Result<RuntimeInstallation> {
         runtime_id(runtime)?;
         let executable = executable.canonicalize()?;
         if !executable.is_file() {
@@ -191,7 +222,8 @@ impl RuntimeManager {
         let hash = hash_file(&executable, "sha256")?;
         let record = RuntimeInstallation {
             id: format!(
-                "system:{runtime}:{:x}",
+                "{}:{runtime}:{:x}",
+                if bundled { "bundle" } else { "system" },
                 Sha256::digest(executable.to_string_lossy().as_bytes())
             ),
             runtime: runtime.into(),
@@ -199,7 +231,12 @@ impl RuntimeManager {
             platform: catalog::platform(),
             root,
             executable,
-            source: "explicit_system_opt_in".into(),
+            source: if bundled {
+                "dockon_bundle"
+            } else {
+                "explicit_system_opt_in"
+            }
+            .into(),
             archive_hash: None,
             executable_hash: hash,
             signature_verified: false,

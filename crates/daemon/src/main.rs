@@ -1,6 +1,8 @@
 mod advisories;
 mod diagnostics;
 mod guardian;
+mod local_services;
+mod workspace;
 
 use anyhow::Result;
 use dockon_core::{Command, Manifest, Request, Response};
@@ -20,6 +22,7 @@ struct DaemonState {
     events: EventBus,
     shutdown: Arc<Notify>,
     router: Arc<dockon_router::Router>,
+    local_services: local_services::Services,
 }
 impl DaemonState {
     async fn system_apply(self: &Arc<Self>, token: String) -> Result<dockon_core::Operation> {
@@ -96,6 +99,12 @@ async fn main() -> Result<()> {
         dir.clone(),
         store.clone(),
     )?);
+    #[cfg(windows)]
+    if let Some(directory) = std::env::current_exe()?.parent() {
+        if let Err(error) = runtimes.register_bundled_web(directory).await {
+            tracing::warn!(%error, "Could not register bundled web runtimes");
+        }
+    }
     let orchestrator = Orchestrator::new(store.clone(), dir.clone()).await?;
     let events = orchestrator.events.clone();
     let shutdown = Arc::new(Notify::new());
@@ -106,6 +115,7 @@ async fn main() -> Result<()> {
         store,
         events,
         shutdown: shutdown.clone(),
+        local_services: local_services::Services::new(dir.join("services"))?,
     });
     let router_state = state.clone();
     let router_task = tokio::spawn(async move {
@@ -167,6 +177,7 @@ async fn main() -> Result<()> {
         }
     }
     router_task.abort();
+    state.local_services.set(false).await?;
     state.router.stop().await?;
     state.projects.shutdown().await?;
     std::fs::remove_file(dir.join("connection.json"))?;
@@ -216,6 +227,9 @@ async fn serve(
             Command::RouterStop => {state.router.stop().await?;Response::success(state.router.status().await?)},
             Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"http_tcp", "container":"digest_pinned_http_tcp", "ai":"not_implemented"})),
             Command::Diagnostics => Response::success(diagnostics::report(&state).await?),
+            Command::WorkspaceFolders => Response::success(workspace::folders()?),
+            Command::LocalServices => Response::success(state.local_services.status().await?),
+            Command::LocalServicesSet { running } => Response::success(state.local_services.set(running).await?),
             Command::GuardianPreview => Response::success(serde_json::json!({
                 "provider_base_url": guardian::BASE_URL,
                 "context": diagnostics::report(&state).await?

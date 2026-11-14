@@ -2,6 +2,9 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": {
+      "../../../.local/windows-installer/bin/": "bin/"
+    },
     "externalBin": [
       "../../../.local/windows-installer/dockon-daemon",
       "../../../.local/windows-installer/dockon-hosts-helper",

@@ -18,15 +18,51 @@ try {
         }
     }
     $acl = Get-Acl -LiteralPath $directory
+    foreach ($relative in 'apache/bin/httpd.exe', 'php/php-cgi.exe', 'mysql/bin/mysqld.exe', 'mailpit/mailpit.exe') {
+        if (!(Test-Path -LiteralPath "$directory/bin/$relative" -PathType Leaf)) {
+            throw "Bundled runtime is missing: $relative"
+        }
+    }
+    $env:DOCKON_DATA_DIR = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ('dockon-' + [guid]::NewGuid()))).FullName
+    $daemon = Start-Process -FilePath "$directory\dockon-daemon.exe" -PassThru -WindowStyle Hidden
+    try {
+        $ready = $false
+        for ($attempt = 0; $attempt -lt 50; $attempt++) {
+            if ($daemon.HasExited) { throw "Installed daemon exited with code $($daemon.ExitCode)." }
+            if (Test-Path -LiteralPath "$env:DOCKON_DATA_DIR\connection.json") {
+                $runtimeReply = & "$directory\dockonctl.exe" runtimes | ConvertFrom-Json
+                if ($runtimeReply.ok) { $ready = $true; break }
+            }
+            Start-Sleep -Milliseconds 300
+        }
+        if (!$ready) { throw 'Installed daemon did not become ready.' }
+        foreach ($runtime in 'apache', 'php', 'php-cgi') {
+            if (!($runtimeReply.data | Where-Object { $_.runtime -eq $runtime -and $_.source -eq 'dockon_bundle' })) {
+                throw "Installed daemon did not register bundled runtime: $runtime"
+            }
+        }
+    }
+    finally {
+        if (!$daemon.HasExited) {
+            if (Test-Path -LiteralPath "$env:DOCKON_DATA_DIR\connection.json") {
+                & "$directory\dockonctl.exe" shutdown | Out-Null
+            }
+            if (!$daemon.WaitForExit(5000)) { $daemon.Kill() }
+        }
+    }
     if (!$acl.AreAccessRulesProtected -or (Get-Acl -LiteralPath "$directory\dockon-hosts-helper.exe").AreAccessRulesProtected) {
         throw 'Expected the protected installer directory to propagate permissions to its binaries.'
     }
 
-    $env:DOCKON_DESKTOP_EXECUTABLE = "$directory\dockon-desktop.exe"
-    node ./scripts/desktop-smoke.mjs
-    if ($LASTEXITCODE -ne 0) { throw 'The installed app failed the native smoke test.' }
+    New-Item -ItemType Directory -Path "$directory\www\fixture-project\nested", "$directory\wwwold\outside-project" -Force | Out-Null
+    if ($env:DOCKON_TEST_INTERACTIVE_WEBVIEW -eq '1') {
+        $env:DOCKON_DESKTOP_EXECUTABLE = "$directory\dockon-desktop.exe"
+        $env:DOCKON_WORKSPACE_SMOKE = '1'
+        node ./scripts/desktop-smoke.mjs
+        if ($LASTEXITCODE -ne 0) { throw 'The installed app failed the native smoke test.' }
+    }
 
-    $sentinel = Join-Path $directory 'user-file.txt'
+    $sentinel = Join-Path $directory 'www/user-file.txt'
     Set-Content -LiteralPath $sentinel -Value 'preserve'
 }
 finally {

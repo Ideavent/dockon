@@ -1,5 +1,7 @@
 # Delivery status
 
+The Windows workflow is moving to a shared native development stack. `C:\dockon\www` is the project directory, where each immediate real folder appears in Dockon. Project discovery does not execute source. Docker service creation has been removed from the desktop project screen. The shared Apache/PHP configuration, bundled database and mail, and automatic domain setup are pending.
+
 Work spans the remaining runtime and database acceptance checks and the first Sprint 05 diagnostics.
 
 | Sprint | Status |

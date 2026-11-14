@@ -524,6 +524,11 @@ pub enum Command {
     Health,
     Capabilities,
     Diagnostics,
+    WorkspaceFolders,
+    LocalServices,
+    LocalServicesSet {
+        running: bool,
+    },
     GuardianPreview,
     GuardianModels {
         api_key: String,

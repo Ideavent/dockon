@@ -15,6 +15,8 @@ pnpm desktop
 
 Rust toolchain is installed locally in .tools on this development machine. On other machines install stable Rust, Node 24+, pnpm 11.25.0 and official Tauri 2 prerequisites. The application does not change global PATH.
 
+The Windows setup creates `C:\dockon\www`. Each immediate directory appears in the Projects page. Use Configure project to detect its files and assign its local runtime. The installer preserves `www` during uninstall. Native project start and stop work without Docker. The shared native web, database, cache and mail stack is under development.
+
 Create/import a sample after building:
 
 ```powershell

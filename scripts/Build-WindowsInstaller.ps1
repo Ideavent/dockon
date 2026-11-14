@@ -51,7 +51,23 @@ try {
   ${EndIf}
 '@
     $template = $template.Replace('Section Install' + "`n", 'Section Install' + "`n" + $secureDirectory + "`n")
+    $workspace = @'
+  System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR\www") i.r1'
+  ${If} $1 = -1
+    ClearErrors
+    CreateDirectory "$INSTDIR\www"
+    IfErrors 0 +2
+    Abort "Could not create the Dockon www directory."
+    nsExec::Exec '"$SYSDIR\icacls.exe" "$INSTDIR\www" /grant:r "*S-1-5-32-545:(OI)(CI)M"'
+    Pop $0
+    ${If} $0 != 0
+      Abort "Could not grant access to the Dockon www directory."
+    ${EndIf}
+  ${EndIf}
+'@
+    $template = $template.Replace('  ; Copy main executable' + "`n" + '  File', $workspace + "`n" + '  ; Copy main executable' + "`n" + '  File')
     Set-Content -LiteralPath (Join-Path $stage 'installer.nsi') -Value $template -Encoding utf8
+    & "$PSScriptRoot/Stage-WindowsStack.ps1" -Stage $stage
 
     cargo build --locked --release --target $target -p dockon-daemon --bin dockon-daemon --bin dockonctl -p dockon-router --bin dockon-hosts-helper
     if ($LASTEXITCODE -ne 0) { throw 'Building the Dockon sidecars failed.' }
