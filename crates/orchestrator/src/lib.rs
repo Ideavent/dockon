@@ -67,6 +67,7 @@ struct OwnedService {
     owner: String,
     provider: Provider,
     internal_port: u16,
+    internal_smtp_port: Option<u16>,
     instance: OwnedInstance,
 }
 struct Entry {
@@ -326,10 +327,9 @@ impl Orchestrator {
         }
         if !matches!(current.state, State::Running | State::Stopped)
             || current.manifest.provider != Provider::Native
-            || !current.manifest.services.is_empty()
             || !current.manifest.args.is_empty()
         {
-            bail!("Server switching requires a running or stopped native static site without services");
+            bail!("Server switching requires a running or stopped native web project");
         }
         let binding = current
             .manifest
@@ -341,18 +341,28 @@ impl Orchestrator {
         if !["apache", "nginx"].contains(&previous.runtime.as_str())
             || !["apache", "nginx"].contains(&next.runtime.as_str())
         {
-            bail!("Only Apache and Nginx static profiles support this switch");
+            bail!("Only Apache and Nginx profiles support this switch");
         }
         if previous.id == next.id {
             return Ok(current);
         }
+        let profile = if current
+            .manifest
+            .services
+            .iter()
+            .any(|service| service.id == "php-cgi")
+        {
+            "php"
+        } else {
+            "static"
+        };
         let selected = dockon_runtime_manager::projects::import(
             &self.runtimes,
             id,
             &current.manifest.name,
             &current.manifest.root,
             installation_id,
-            &format!("{}:static", next.runtime),
+            &format!("{}:{profile}", next.runtime),
         )
         .await?;
         let mut manifest = current.manifest.clone();
@@ -365,8 +375,10 @@ impl Orchestrator {
             return Ok(project.clone());
         }
         if manifest.port != 0 {
-            bail!("Stop the project before switching a fixed-port static site");
+            bail!("Stop the project before switching a fixed-port web project");
         }
+        let environment =
+            service_environment(entry.services.lock().await.iter(), manifest.provider)?;
         let staging = self
             .data_dir
             .join("instances")
@@ -380,7 +392,7 @@ impl Orchestrator {
             &staging,
             id,
             "web-preview",
-            &BTreeMap::new(),
+            &environment,
         )
         .await?;
         if let Err(error) = self.store.update_manifest(&manifest).await {
@@ -406,6 +418,164 @@ impl Orchestrator {
     }
     pub async fn operation(&self, id: &str) -> Result<Operation> {
         self.store.operation(id).await
+    }
+    pub async fn add_redis(&self, id: &str) -> Result<Project> {
+        self.add_service(id, serde_json::from_value(serde_json::json!({
+            "id": "redis",
+            "provider": "container",
+            "container": {
+                "engine": "docker",
+                "image": "docker.io/library/redis@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499",
+                "internal_port": 6379,
+                "entrypoint": "redis-server",
+                "command": ["--dir", "/dockon-data", "--appendonly", "yes", "--bind", "0.0.0.0"]
+            },
+            "health": {"type": "tcp"}
+        }))?).await
+    }
+    pub async fn add_mailpit(&self, id: &str) -> Result<Project> {
+        self.add_service(id, serde_json::from_value(serde_json::json!({
+            "id": "mailpit",
+            "provider": "container",
+            "container": {
+                "engine": "docker",
+                "image": "docker.io/axllent/mailpit@sha256:aef2aacc11f075ec0fb6874275ee4a421e688e11a96ebb296134d1735c7761ce",
+                "internal_port": 8025,
+                "smtp_port": 1025,
+                "entrypoint": "/mailpit",
+                "command": ["--database", "/dockon-data/mailpit.db", "--disable-version-check", "--allowed-hosts", "127.0.0.1,localhost,mailpit"]
+            },
+            "health": {"type": "http", "path": "/readyz"}
+        }))?).await
+    }
+    pub async fn add_postgres(&self, id: &str) -> Result<Project> {
+        self.add_service(
+            id,
+            serde_json::from_value(serde_json::json!({
+                "id": "postgres",
+                "provider": "container",
+                "container": {
+                    "engine": "docker",
+                    "image": dockon_core::POSTGRES_IMAGE,
+                    "internal_port": 5432
+                },
+                "health": {"type": "tcp"},
+                "startup_timeout_seconds": 90
+            }))?,
+        )
+        .await
+    }
+    pub async fn postgres_connection(&self, id: &str) -> Result<serde_json::Value> {
+        let entry = self.entry(id).await?;
+        let _guard = entry.lifecycle.lock().await;
+        let project = entry.project.read().await;
+        let spec = project
+            .manifest
+            .services
+            .iter()
+            .find(|service| {
+                service.id == "postgres"
+                    && service
+                        .container
+                        .as_ref()
+                        .is_some_and(|container| container.image == dockon_core::POSTGRES_IMAGE)
+            })
+            .context("Project has no managed PostgreSQL service")?;
+        let service = project
+            .services
+            .iter()
+            .find(|service| service.id == spec.id && service.state == State::Running)
+            .context("Start the project's PostgreSQL service first")?;
+        let password_file = self
+            .data_dir
+            .join("instances")
+            .join(dockon_core::project_key(id))
+            .join("services")
+            .join(dockon_core::project_key(&spec.id))
+            .join("postgres-password");
+        let password = std::fs::read_to_string(password_file)?;
+        Ok(serde_json::json!({
+            "host": "127.0.0.1",
+            "port": service.port,
+            "user": "postgres",
+            "database": "dockon",
+            "password": password
+        }))
+    }
+    pub async fn backup_postgres(&self, id: &str) -> Result<PathBuf> {
+        let entry = self.entry(id).await?;
+        let _guard = entry.lifecycle.lock().await;
+        let project = entry.project.read().await;
+        if !project.manifest.services.iter().any(|service| {
+            service.id == "postgres"
+                && service
+                    .container
+                    .as_ref()
+                    .is_some_and(|container| container.image == dockon_core::POSTGRES_IMAGE)
+        }) {
+            bail!("Project has no managed PostgreSQL service");
+        }
+        drop(project);
+        let services = entry.services.lock().await;
+        let service = services
+            .iter()
+            .find(|service| service.status.id == "postgres")
+            .context("Start PostgreSQL first")?;
+        let OwnedInstance::Container { process, .. } = &service.instance else {
+            bail!("PostgreSQL backup requires a running Docker service");
+        };
+        let dump = process.postgres_dump().await?;
+        let directory = self
+            .data_dir
+            .join("backups")
+            .join(dockon_core::project_key(id));
+        std::fs::create_dir_all(&directory)?;
+        let name = format!("postgres-{}", uuid::Uuid::new_v4());
+        let partial = directory.join(format!("{name}.partial"));
+        let destination = directory.join(format!("{name}.sql"));
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)?;
+        file.write_all(dump.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&partial, &destination)?;
+        Ok(destination)
+    }
+    async fn add_service(&self, id: &str, service: dockon_core::ServiceSpec) -> Result<Project> {
+        let entry = self.entry(id).await?;
+        let _guard = entry.lifecycle.lock().await;
+        if self.closing.load(Ordering::Acquire) {
+            bail!("Daemon is shutting down");
+        }
+        let mut project = entry.project.write().await;
+        if project.state != State::Stopped {
+            bail!("Stop the project before changing its service dependencies");
+        }
+        if project
+            .manifest
+            .services
+            .iter()
+            .any(|existing| existing.id == service.id)
+        {
+            bail!("This project already has a service named {}", service.id);
+        }
+        let mut manifest = project.manifest.clone();
+        if manifest.provider == Provider::Container
+            && manifest
+                .container
+                .as_ref()
+                .is_some_and(|container| container.engine != dockon_core::ContainerEngine::Docker)
+        {
+            bail!("This service preset uses Docker. Select a Docker project or a native project");
+        }
+        manifest.services.push(service);
+        manifest.validate()?;
+        self.store.update_manifest(&manifest).await?;
+        project.manifest = manifest;
+        Ok(project.clone())
     }
     async fn start_entry(&self, entry: &Entry) -> Result<()> {
         {
@@ -475,12 +645,17 @@ impl Orchestrator {
                     pid: instance.pid(),
                     port,
                     container_id: instance.container_id(),
+                    smtp_port: instance.smtp_port(),
                 };
                 services.push(OwnedService {
                     status,
                     owner: child.id,
                     provider: service.provider,
                     internal_port: service.container.as_ref().map_or(port, |c| c.internal_port),
+                    internal_smtp_port: service
+                        .container
+                        .as_ref()
+                        .and_then(|container| container.smtp_port),
                     instance,
                 });
                 entry.project.write().await.services =
@@ -585,14 +760,41 @@ fn service_environment<'a>(
     consumer: Provider,
 ) -> Result<BTreeMap<String, String>> {
     let mut endpoints = BTreeMap::new();
+    let mut environment = BTreeMap::new();
     for service in services {
         if consumer == Provider::Container && service.provider == Provider::Native {
             bail!("Container-to-native service routing is not implemented; choose a native application or container dependency");
         }
-        endpoints.insert(service.status.id.clone(),serde_json::json!({"host":if consumer==Provider::Container{service.status.id.as_str()}else{"127.0.0.1"},"port":if consumer==Provider::Container{service.internal_port}else{service.status.port}}));
+        let host = if consumer == Provider::Container {
+            service.status.id.as_str()
+        } else {
+            "127.0.0.1"
+        };
+        let port = if consumer == Provider::Container {
+            service.internal_port
+        } else {
+            service.status.port
+        };
+        let smtp = if consumer == Provider::Container {
+            service.internal_smtp_port
+        } else {
+            service.status.smtp_port
+        };
+        endpoints.insert(
+            service.status.id.clone(),
+            serde_json::json!({
+                "host": host,
+                "port": port,
+                "smtp_port": smtp
+            }),
+        );
+        if service.status.id == "mailpit" {
+            if let Some(smtp) = smtp {
+                environment.insert("SMTP_HOST".into(), host.into());
+                environment.insert("SMTP_PORT".into(), smtp.to_string());
+            }
+        }
     }
-    Ok(BTreeMap::from([(
-        "DOCKON_SERVICES".into(),
-        serde_json::to_string(&endpoints)?,
-    )]))
+    environment.insert("DOCKON_SERVICES".into(), serde_json::to_string(&endpoints)?);
+    Ok(environment)
 }

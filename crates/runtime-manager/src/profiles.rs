@@ -44,11 +44,32 @@ impl RuntimeManager {
                     bail!("Nginx static projects use generated configuration");
                 }
                 let public = web_public(&manifest.root)?;
-                #[cfg(windows)]
-                reject_windows_links(&public)?;
+                let backend = php_backend(&environment)?;
                 let public = web_path(&public)?;
                 let config = data.join("nginx.conf");
                 let prefix = format!("{}/", web_path(data)?);
+                let php = match backend {
+                    Some(backend) => format!(
+                        r#"
+        location = / {{ rewrite ^ /index.php last; }}
+        location = /index.php {{
+            fastcgi_pass 127.0.0.1:{backend};
+            fastcgi_param SCRIPT_FILENAME "{public}/index.php";
+            fastcgi_param DOCUMENT_ROOT "{public}";
+            fastcgi_param SCRIPT_NAME /index.php;
+            fastcgi_param REQUEST_URI $request_uri;
+            fastcgi_param REQUEST_METHOD $request_method;
+            fastcgi_param QUERY_STRING $query_string;
+            fastcgi_param CONTENT_TYPE $content_type;
+            fastcgi_param CONTENT_LENGTH $content_length;
+            fastcgi_param SERVER_PROTOCOL $server_protocol;
+            fastcgi_param SERVER_NAME $server_name;
+            fastcgi_param SERVER_PORT $server_port;
+        }}
+"#
+                    ),
+                    None => "location = / { rewrite ^ /index.html last; }".into(),
+                };
                 std::fs::write(
                     &config,
                     format!(
@@ -81,7 +102,7 @@ http {{
         location ~ "(?i)^/(?:[a-z0-9_-][a-z0-9_.-]*/)*[a-z0-9_-][a-z0-9_.-]*\.(html|css|js|png|jpe?g|gif|svg|ico|webp)$" {{
             {symlink_policy}
         }}
-        location = / {{ rewrite ^ /index.html last; }}
+        {php}
         location / {{ return 403; }}
     }}
 }}
@@ -106,6 +127,7 @@ http {{
                     .parent()
                     .context("Apache installation root unavailable")?;
                 let public = web_public(&manifest.root)?;
+                let backend = php_backend(&environment)?;
                 let quote = |path: &Path| -> Result<String> {
                     let path = path.to_str().context("Apache requires UTF-8 paths")?;
                     if path.contains(['"', '\n', '\r', '$']) {
@@ -118,6 +140,14 @@ http {{
                 let pid = quote(&data.join("httpd.pid"))?;
                 let error_log = quote(&data.join("httpd-error.log"))?;
                 let config = data.join("httpd.conf");
+                let (proxy_modules, index, handler) = match backend {
+                    Some(backend) => (
+                        "LoadModule proxy_module modules/mod_proxy.so\nLoadModule proxy_fcgi_module modules/mod_proxy_fcgi.so\nProxyRequests Off\nProxyFCGIBackendType GENERIC",
+                        "index.php",
+                        format!("<LocationMatch \"^/index[.]php$\">\n    Require all granted\n    SetHandler \"proxy:fcgi://127.0.0.1:{backend}/\"\n    ProxyFCGISetEnvIf \"true\" SCRIPT_FILENAME \"{}/index.php\"\n</LocationMatch>", public.trim_matches('"')),
+                    ),
+                    None => ("", "index.html", String::new()),
+                };
                 std::fs::write(
                     &config,
                     format!(
@@ -127,6 +157,7 @@ LoadModule authz_core_module modules/mod_authz_core.so
 LoadModule dir_module modules/mod_dir.so
 LoadModule mime_module modules/mod_mime.so
 TypesConfig conf/mime.types
+{proxy_modules}
 PidFile {pid}
 ErrorLog {error_log}
 DocumentRoot {public}
@@ -137,11 +168,12 @@ DocumentRoot {public}
     Options None
     AllowOverride None
     Require all granted
-    DirectoryIndex index.html
+    DirectoryIndex {index}
     <FilesMatch "(?i)^(?![a-z0-9_-][a-z0-9_.-]*\.(?:html|css|js|png|jpe?g|gif|svg|ico|webp)$).+">
         Require all denied
     </FilesMatch>
 </Directory>
+{handler}
 "#
                     ),
                 )?;
@@ -161,7 +193,7 @@ DocumentRoot {public}
             "node" => {
                 set(&mut environment, "npm_config_cache", &cache.join("npm"));
             }
-            "php" => {
+            "php" | "php-cgi" => {
                 let ini = data.join("php.ini");
                 let extension = record.root.join("ext").to_string_lossy().replace('\\', "/");
                 let private = data.to_string_lossy().replace('\\', "/");
@@ -299,7 +331,26 @@ fn web_public(root: &Path) -> Result<std::path::PathBuf> {
     if !public.is_dir() || !public.starts_with(&root) || public == root {
         bail!("The public directory must be inside the project root");
     }
+    #[cfg(windows)]
+    reject_windows_links(&public)?;
     Ok(public)
+}
+
+fn php_backend(environment: &BTreeMap<String, String>) -> Result<Option<u16>> {
+    let Some(services) = environment.get("DOCKON_SERVICES") else {
+        return Ok(None);
+    };
+    let services: serde_json::Value = serde_json::from_str(services)?;
+    let Some(endpoint) = services.get("php-cgi") else {
+        return Ok(None);
+    };
+    let port = endpoint["port"]
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok());
+    match (endpoint["host"].as_str(), port) {
+        (Some("127.0.0.1"), Some(port)) if port != 0 => Ok(Some(port)),
+        _ => bail!("PHP CGI must be a loopback project dependency"),
+    }
 }
 
 fn web_path(path: &Path) -> Result<String> {

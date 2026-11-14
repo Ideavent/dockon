@@ -96,7 +96,7 @@ impl RuntimeManager {
         let mut found = vec![];
         let mut seen = std::collections::BTreeSet::new();
         for runtime in [
-            "node", "php", "dotnet", "go", "python", "rust", "caddy", "apache", "nginx",
+            "node", "php", "php-cgi", "dotnet", "go", "python", "rust", "caddy", "apache", "nginx",
         ] {
             let name = match runtime {
                 "rust" => "cargo",
@@ -360,7 +360,16 @@ fn runtime_root(runtime: &str, executable: &Path) -> Result<PathBuf> {
 fn runtime_id(runtime: &str) -> Result<()> {
     if !matches!(
         runtime,
-        "node" | "php" | "dotnet" | "go" | "python" | "rust" | "caddy" | "apache" | "nginx"
+        "node"
+            | "php"
+            | "php-cgi"
+            | "dotnet"
+            | "go"
+            | "python"
+            | "rust"
+            | "caddy"
+            | "apache"
+            | "nginx"
     ) {
         bail!("Unsupported runtime id");
     }
@@ -414,7 +423,7 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
     let mut command = tokio::process::Command::new(executable);
     command
         .args(match runtime {
-            "php" => vec!["-n", "--version"],
+            "php" | "php-cgi" => vec!["-n", "--version"],
             "go" | "caddy" => vec!["version"],
             "apache" | "nginx" => vec!["-v"],
             _ => vec!["--version"],
@@ -459,6 +468,9 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
     .await
     .context("Runtime version check timed out")??;
     let text = String::from_utf8_lossy(&output);
+    if runtime == "php-cgi" && !text.contains("cgi-fcgi") {
+        bail!("Select the PHP CGI executable (php-cgi), not the PHP CLI");
+    }
     if matches!(runtime, "apache" | "nginx") {
         let product = if runtime == "apache" {
             "Apache/"

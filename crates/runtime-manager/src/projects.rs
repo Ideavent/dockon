@@ -1,7 +1,7 @@
 //! Read-only detection and explicit source creation/import. No dependency installer is run.
 use crate::RuntimeManager;
 use anyhow::{bail, Context, Result};
-use dockon_core::{LaunchArg, Manifest, RuntimeInstallation};
+use dockon_core::{HealthCheck, LaunchArg, Manifest, RuntimeInstallation, ServiceSpec};
 use serde::Serialize;
 use std::{
     io::{Read, Write},
@@ -66,6 +66,10 @@ pub fn detect(root: &Path) -> Result<Detection> {
     if root.join("public/index.php").is_file() {
         child(&root, "public/index.php")?;
         add("php:public", "php", "public/index.php");
+        if cfg!(windows) {
+            add("apache:php", "apache", "public/index.php");
+            add("nginx:php", "nginx", "public/index.php");
+        }
     } else if root.join("index.php").is_file() {
         child(&root, "index.php")?;
         add("php:root", "php", "index.php");
@@ -127,7 +131,7 @@ fn manifest(
     validate_identity(id, name)?;
     let mut args: Vec<LaunchArg> = vec![];
     match profile {
-        "apache:static" | "nginx:static" => {}
+        "apache:static" | "nginx:static" | "apache:php" | "nginx:php" => {}
         p if p.starts_with("node:") => {
             child(root, &p[5..])?;
             args.push(p[5..].into());
@@ -203,6 +207,39 @@ pub async fn import(
     }
     manifest(id, name, &detection.root, &installation, profile)
 }
+pub async fn attach_php_cgi(
+    manager: &RuntimeManager,
+    manifest: &mut Manifest,
+    profile: &str,
+    installation_id: Option<&str>,
+) -> Result<()> {
+    if !matches!(profile, "apache:php" | "nginx:php") {
+        if installation_id.is_some() {
+            bail!("The selected profile does not use PHP CGI");
+        }
+        return Ok(());
+    }
+    let id = installation_id.context("Select an installed PHP CGI executable")?;
+    let cgi = manager.selected(id).await?;
+    if cgi.runtime != "php-cgi" {
+        bail!("The selected runtime must be PHP CGI");
+    }
+    let service: ServiceSpec = serde_json::from_value(serde_json::json!({
+        "id": "php-cgi",
+        "executable": cgi.executable,
+        "args": [
+            "-d", "cgi.force_redirect=0",
+            "-d", "cgi.fix_pathinfo=0",
+            "-b", {"template": "127.0.0.1:${DOCKON_PORT}"}
+        ],
+        "runtime": {"installation_id": cgi.id},
+        "health": HealthCheck::Tcp,
+        "working_dir": "public"
+    }))?;
+    manifest.services.push(service);
+    manifest.validate()
+}
+
 pub async fn create(
     manager: &RuntimeManager,
     id: &str,

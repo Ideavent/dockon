@@ -15,9 +15,16 @@ pub(crate) enum OwnedInstance {
     Container {
         process: ContainerInstance,
         _lease: PortLease,
+        smtp: Option<PortLease>,
     },
 }
 impl OwnedInstance {
+    pub fn smtp_port(&self) -> Option<u16> {
+        match self {
+            Self::Container { smtp, .. } => smtp.as_ref().map(|lease| lease.port),
+            Self::Native { .. } => None,
+        }
+    }
     pub fn pid(&self) -> Option<u32> {
         match self {
             Self::Native { process, .. } => process.child.id(),
@@ -100,11 +107,46 @@ pub(crate) async fn launch(
                 "provider",
                 &format!("Preparing pinned image and isolated resources for {alias}"),
             );
+            let smtp = spec.smtp_port.map(|_| ports.reserve(0)).transpose()?;
+            let mut environment = environment.clone();
+            if spec.image == dockon_core::POSTGRES_IMAGE {
+                let path = data_dir.join("postgres-password");
+                let password = match std::fs::read_to_string(&path) {
+                    Ok(password) => password,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        use std::io::Write;
+                        let password = format!(
+                            "{}{}",
+                            uuid::Uuid::new_v4().simple(),
+                            uuid::Uuid::new_v4().simple()
+                        );
+                        let mut file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path)?;
+                        file.write_all(password.as_bytes())?;
+                        file.sync_all()?;
+                        password
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                environment.insert("POSTGRES_PASSWORD".into(), password);
+                environment.insert("POSTGRES_DB".into(), "dockon".into());
+                environment.insert("PGDATA".into(), "/dockon-data/postgres".into());
+            }
             OwnedInstance::Container {
                 process: containers
-                    .start(project, &manifest.id, alias, spec, port, environment)
+                    .start(
+                        project,
+                        &manifest.id,
+                        alias,
+                        spec,
+                        (port, smtp.as_ref().map(|lease| lease.port)),
+                        &environment,
+                    )
                     .await?,
                 _lease: lease,
+                smtp,
             }
         }
     };
@@ -136,18 +178,35 @@ async fn wait_ready(manifest: &Manifest, instance: &mut OwnedInstance, port: u16
         if !instance.running().await? {
             bail!("Workload exited before readiness");
         }
-        let ready = match &manifest.health {
-            HealthCheck::Http { path } => client
-                .get(format!("http://127.0.0.1:{port}{path}"))
-                .send()
+        let ready = if let OwnedInstance::Container { process, .. } = instance {
+            if manifest
+                .container
+                .as_ref()
+                .is_some_and(|spec| spec.image == dockon_core::POSTGRES_IMAGE)
+            {
+                Some(process.postgres_ready().await?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let ready = if let Some(ready) = ready {
+            ready
+        } else {
+            match &manifest.health {
+                HealthCheck::Http { path } => client
+                    .get(format!("http://127.0.0.1:{port}{path}"))
+                    .send()
+                    .await
+                    .is_ok_and(|r| r.status().is_success()),
+                HealthCheck::Tcp => tokio::time::timeout(
+                    std::time::Duration::from_millis(300),
+                    tokio::net::TcpStream::connect(("127.0.0.1", port)),
+                )
                 .await
-                .is_ok_and(|r| r.status().is_success()),
-            HealthCheck::Tcp => tokio::time::timeout(
-                std::time::Duration::from_millis(300),
-                tokio::net::TcpStream::connect(("127.0.0.1", port)),
-            )
-            .await
-            .is_ok_and(|r| r.is_ok()),
+                .is_ok_and(|r| r.is_ok()),
+            }
         };
         if ready {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;

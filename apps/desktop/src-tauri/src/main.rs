@@ -41,7 +41,11 @@ async fn request(command: dockon_core::Command) -> Result<dockon_core::Response,
 }
 
 #[tauri::command]
-async fn open_project(app: tauri::AppHandle, id: String) -> Result<(), String> {
+async fn open_project(
+    app: tauri::AppHandle,
+    id: String,
+    inbox: Option<bool>,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let response = dockon_ipc::call(dockon_core::Command::List)
         .await
@@ -55,6 +59,22 @@ async fn open_project(app: tauri::AppHandle, id: String) -> Result<(), String> {
         .into_iter()
         .find(|p| p.manifest.id == id)
         .ok_or("Unknown project")?;
+    if inbox == Some(true) {
+        let port = project
+            .services
+            .iter()
+            .find(|service| {
+                service.id == "mailpit"
+                    && service.state == dockon_core::State::Running
+                    && service.smtp_port.is_some()
+            })
+            .ok_or("Mailpit is not ready")?
+            .port;
+        return app
+            .opener()
+            .open_url(format!("http://127.0.0.1:{port}"), None::<&str>)
+            .map_err(|error| error.to_string());
+    }
     if project.state != dockon_core::State::Running
         || matches!(project.manifest.health, dockon_core::HealthCheck::Tcp)
     {

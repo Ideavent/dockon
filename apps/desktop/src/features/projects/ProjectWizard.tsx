@@ -27,6 +27,8 @@ export function ProjectWizard({
   const [root, setRoot] = useState("");
   const [installation, setInstallation] = useState("");
   const [profile, setProfile] = useState("");
+  const [phpCgi, setPhpCgi] = useState("");
+  const usesFastCgi = ["apache:php", "nginx:php"].includes(profile);
   const cache = useQueryClient();
   const installed = useQuery({
     queryKey: ["runtimes"],
@@ -46,7 +48,12 @@ export function ProjectWizard({
         name,
         root,
         runtime_installation: installation,
-        ...(mode === "import" ? { profile } : {}),
+        ...(mode === "import"
+          ? {
+              profile,
+              ...(usesFastCgi ? { php_cgi_installation: phpCgi } : {}),
+            }
+          : {}),
       }),
     onSuccess: () => {
       cache.invalidateQueries({ queryKey: ["projects"] });
@@ -56,7 +63,7 @@ export function ProjectWizard({
   const runtime = detect.data?.profiles.find((p) => p.id === profile)?.runtime;
   const choices = (installed.data || []).filter(
     (i) =>
-      i.runtime !== "caddy" &&
+      !["caddy", "php-cgi"].includes(i.runtime) &&
       (i.runtime !== "apache" || i.platform.startsWith("windows-")) &&
       (mode === "create" || i.runtime === runtime),
   );
@@ -173,7 +180,8 @@ export function ProjectWizard({
                   </option>
                   {detect.data.profiles.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.runtime} · {p.evidence}
+                      {p.runtime} · {p.id.endsWith(":php") ? "FastCGI · " : ""}
+                      {p.evidence}
                     </option>
                   ))}
                 </select>
@@ -214,6 +222,33 @@ export function ProjectWizard({
             </option>
           ))}
         </select>
+        {usesFastCgi && (
+          <>
+            <label htmlFor="project-php-cgi">PHP CGI</label>
+            <select
+              id="project-php-cgi"
+              value={phpCgi}
+              disabled={save.isPending}
+              onChange={(event) => setPhpCgi(event.target.value)}
+            >
+              <option value="">
+                {tr ? "Kurulu PHP CGI seç" : "Choose installed PHP CGI"}
+              </option>
+              {installed.data
+                ?.filter((item) => item.runtime === "php-cgi")
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.version}
+                  </option>
+                ))}
+            </select>
+            <p>
+              {tr
+                ? "Bu profil public/index.php giriş noktasını çalıştırır. .htaccess kuralları ayrı yapılandırma gerektirir."
+                : "This profile runs public/index.php. .htaccess rules require separate configuration."}
+            </p>
+          </>
+        )}
         {installed.isSuccess && !installed.data.length && (
           <p>
             {tr
@@ -240,7 +275,10 @@ export function ProjectWizard({
           <Button
             variant="primary"
             disabled={
-              save.isPending || !installation || (mode === "import" && !profile)
+              save.isPending ||
+              !installation ||
+              (mode === "import" && !profile) ||
+              (usesFastCgi && !phpCgi)
             }
           >
             {save.isPending

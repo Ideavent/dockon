@@ -111,13 +111,22 @@ pub struct ContainerSpec {
     pub engine: ContainerEngine,
     pub image: String,
     pub internal_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_port: Option<u16>,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub entrypoint: Option<String>,
 }
+pub const POSTGRES_IMAGE: &str = "docker.io/library/postgres@sha256:d3244e8ce3f165ee3c93d9c4a4b1d0fe48b3a89e2287b717fdcbbde92d405065";
 impl ContainerSpec {
     pub fn validate(&self) -> Result<()> {
+        if self
+            .smtp_port
+            .is_some_and(|port| port == 0 || port == self.internal_port)
+        {
+            bail!("SMTP must use a distinct nonzero container port");
+        }
         let (image, digest) = self
             .image
             .split_once("@sha256:")
@@ -451,6 +460,7 @@ pub struct ServiceStatus {
     pub pid: Option<u32>,
     pub port: u16,
     pub container_id: Option<String>,
+    pub smtp_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -538,10 +548,27 @@ pub enum Command {
         root: PathBuf,
         runtime_installation: String,
         profile: String,
+        #[serde(default)]
+        php_cgi_installation: Option<String>,
     },
     ProjectSwitchStaticServer {
         id: String,
         runtime_installation: String,
+    },
+    ProjectAddRedis {
+        id: String,
+    },
+    ProjectAddMailpit {
+        id: String,
+    },
+    ProjectAddPostgres {
+        id: String,
+    },
+    PostgresConnection {
+        id: String,
+    },
+    PostgresBackup {
+        id: String,
     },
     List,
     Register {
@@ -676,6 +703,7 @@ mod tests {
     #[test]
     fn requires_digest_and_nonzero_internal_port() {
         let mut spec = ContainerSpec {
+            smtp_port: None,
             engine: ContainerEngine::Docker,
             image: "redis:latest".into(),
             internal_port: 6379,

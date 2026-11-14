@@ -226,14 +226,20 @@ async fn serve(
                 let manifest=dockon_runtime_manager::projects::create(&state.runtimes,&id,&name,&root,&runtime_installation).await?;
                 Response::success(state.projects.register(manifest).await?)
             },
-            Command::ProjectImport {id,name,root,runtime_installation,profile} => {
-                let manifest=dockon_runtime_manager::projects::import(&state.runtimes,&id,&name,&root,&runtime_installation,&profile).await?;
+            Command::ProjectImport {id,name,root,runtime_installation,profile,php_cgi_installation} => {
+                let mut manifest=dockon_runtime_manager::projects::import(&state.runtimes,&id,&name,&root,&runtime_installation,&profile).await?;
+                dockon_runtime_manager::projects::attach_php_cgi(&state.runtimes, &mut manifest, &profile, php_cgi_installation.as_deref()).await?;
                 Response::success(state.projects.register(manifest).await?)
             },
             Command::ProjectSwitchStaticServer { id, runtime_installation } => Response::success(
                 state.projects.submit_static_switch(id, runtime_installation).await?
             ),
             Command::List => Response::success(state.projects.list().await?),
+            Command::ProjectAddRedis { id } => Response::success(state.projects.add_redis(&id).await?),
+            Command::ProjectAddMailpit { id } => Response::success(state.projects.add_mailpit(&id).await?),
+            Command::ProjectAddPostgres { id } => Response::success(state.projects.add_postgres(&id).await?),
+            Command::PostgresConnection { id } => Response::success(state.projects.postgres_connection(&id).await?),
+            Command::PostgresBackup { id } => Response::success(state.projects.backup_postgres(&id).await?),
             Command::Register { manifest_path } => Response::success(state.projects.register(Manifest::read(&manifest_path)?).await?),
             Command::Start { id } => Response::success(state.projects.submit(id, true).await?),
             Command::Stop { id } => Response::success(state.projects.submit(id, false).await?),

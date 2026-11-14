@@ -121,10 +121,11 @@ impl ContainerProvider {
         owner: &str,
         alias: &str,
         spec: &ContainerSpec,
-        port: u16,
+        ports: (u16, Option<u16>),
         environment: &std::collections::BTreeMap<String, String>,
     ) -> Result<ContainerInstance> {
         spec.validate()?;
+        let (port, smtp_port) = ports;
         let resource = self.resource_name(owner);
         let network = self.resource_name(project);
         self.ensure_resource(spec.engine, "network", &network, project, project)
@@ -169,6 +170,21 @@ impl ContainerProvider {
         ];
         if spec.engine == ContainerEngine::Docker {
             args.extend(["--log-opt".into(), "max-file=2".into()]);
+        }
+        if let (Some(host_port), Some(container_port)) = (smtp_port, spec.smtp_port) {
+            args.extend([
+                "--publish".into(),
+                format!("127.0.0.1:{host_port}:{container_port}"),
+            ]);
+        }
+        if spec.image == dockon_core::POSTGRES_IMAGE {
+            for capability in ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "FOWNER"] {
+                args.extend(["--cap-add".into(), capability.into()]);
+            }
+            args.extend([
+                "--tmpfs".into(),
+                "/var/run/postgresql:rw,nosuid,nodev,noexec".into(),
+            ]);
         }
         args.extend([
             "--env".into(),
@@ -257,6 +273,52 @@ pub struct ContainerInstance {
     provider: ContainerProvider,
 }
 impl ContainerInstance {
+    pub async fn postgres_dump(&self) -> Result<String> {
+        let container = self
+            .provider
+            .inspect(self.engine, "container", &self.id)
+            .await?;
+        self.provider
+            .check_labels(&container["Config"]["Labels"], &self.project, &self.owner)?;
+        execute(
+            self.engine,
+            &[
+                "exec".into(),
+                "--user".into(),
+                "postgres".into(),
+                self.id.clone(),
+                "pg_dump".into(),
+                "--no-password".into(),
+                "--username=postgres".into(),
+                "--dbname=dockon".into(),
+            ],
+            25,
+        )
+        .await
+    }
+    pub async fn postgres_ready(&self) -> Result<bool> {
+        let container = self
+            .provider
+            .inspect(self.engine, "container", &self.id)
+            .await?;
+        self.provider
+            .check_labels(&container["Config"]["Labels"], &self.project, &self.owner)?;
+        Ok(execute(
+            self.engine,
+            &[
+                "exec".into(),
+                self.id.clone(),
+                "pg_isready".into(),
+                "-h".into(),
+                "127.0.0.1".into(),
+                "-t".into(),
+                "1".into(),
+            ],
+            4,
+        )
+        .await
+        .is_ok())
+    }
     pub async fn running(&self) -> Result<bool> {
         let value = self
             .provider

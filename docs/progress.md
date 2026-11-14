@@ -6,8 +6,8 @@ Work is in Sprint 03. Later sprints must not be called complete before their imp
 |---|---|
 | 01 foundation and lifecycle | Complete: Windows host/native UI checks and Windows/macOS/Linux CI passed |
 | 02 hybrid provider and isolation | Complete: Windows/macOS/Linux CI and Linux Docker integration passed at 4138370 |
-| 03 runtimes and web | In progress: runtimes, Python/Rust profiles and local routing passed Windows/macOS/Linux CI at a0e77d7; web-server switching remains |
-| 04 databases, cache, mail | Pending |
+| 03 runtimes and web | Apache/Nginx switching for static and FastCGI projects verified on Windows. .htaccess execution remains pending. |
+| 04 databases, cache, mail | In progress. Redis, Mailpit and PostgreSQL Docker presets passed local persistence checks. |
 | 05 updates, backup, diagnostics | Pending |
 | 06 cloud AI | Pending |
 
@@ -25,4 +25,6 @@ The user supplies their own AI provider. Vendor, model and protocol stay unconfi
 
 Routing uses editable full domains with `.test` defaults, private Caddy CA storage, loopback listeners and separate hosts/trust approvals. Backend checks passed HTTP/CA-verified HTTPS, independent stopped-route 503 updates, stale/replayed/forged approval rejection, failed-restart rollback, saved settings without autostart and unchanged real hosts on Windows/macOS/Linux CI at ae8b0a1. Native Windows UI checks passed editable `.test` routing, configuration preview/apply and separate hosts preview. Pure fixture tests passed scoped hosts writes, backup, preservation and stale-file rejection. Windows native certificate add/find/remove tests passed in an isolated memory store. Live elevation and real trust mutations remain unverified; macOS/Linux automated trust is unsupported.
 
-Current implementation is on `codex/sprint03-runtimes`. The completed Sprint 02 checkpoint is on `main`. Windows checks passed managed Apache and Nginx installations, explicit executable registration, native static sites, live static-site switching and the Apache Docker sample. Sprint 03 still has broader web integration work. See [web-server-boundary.md](web-server-boundary.md). Sprint 04–06 and the production installer remain pending.
+Current implementation is on `codex/sprint03-runtimes`. The completed Sprint 02 checkpoint is on `main`. Windows checks passed managed Apache and Nginx installations, explicit executable registration, native static sites, live static-site switching, the Apache Docker sample and PHP/FastCGI import. See [web-server-boundary.md](web-server-boundary.md).
+
+Stopped projects can add Redis, Mailpit or PostgreSQL with Docker. Local checks verified Redis and Mailpit data isolation across two projects, delivery through SMTP and inbox persistence, and PostgreSQL authentication, persistent data and SQL export. The PostgreSQL password uses the daemon's private data directory and is returned through an explicit connection details request. MySQL, MariaDB, MongoDB, database restore, Sprint 05–06 and the production installer remain pending.

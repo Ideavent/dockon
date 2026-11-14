@@ -38,14 +38,14 @@ type Project = {
     runtime?: { installation_id: string };
     provider?: "native" | "container";
     health?: { type: "http" | "tcp" };
-    services?: { provider?: "native" | "container" }[];
+    services?: { id: string; provider?: "native" | "container" }[];
   };
   state: string;
   pid: number | null;
   port: number | null;
   error: string | null;
   container_id?: string | null;
-  services?: { id: string; state: string; port: number }[];
+  services?: { id: string; state: string; port: number; smtp_port?: number }[];
 };
 type Event = { seq: number; project_id: string; kind: string; message: string };
 type Operation = { id: string; status: string; error: string | null };
@@ -118,6 +118,21 @@ function App() {
   const [importing, setImporting] = useState(false);
   const [wizard, setWizard] = useState(false);
   const [serverSwitch, setServerSwitch] = useState("");
+  const connectionDetails = useMutation({
+    mutationFn: (id: string) =>
+      request<{
+        host: string;
+        port: number;
+        user: string;
+        database: string;
+        password: string;
+      }>("postgres_connection", { id }),
+    onError: (error) => setError(String(error)),
+  });
+  const postgresBackup = useMutation({
+    mutationFn: (id: string) => request<string>("postgres_backup", { id }),
+    onError: (error) => setError(String(error)),
+  });
   const [path, setPath] = useState("");
   const [events, setEvents] = useState<Event[]>([]);
   const [selected, setSelected] = useState("");
@@ -462,6 +477,8 @@ function App() {
                             <span>{service.id}</span>
                             <span>
                               {service.state} · :{service.port}
+                              {service.smtp_port &&
+                                ` · SMTP :${service.smtp_port}`}
                             </span>
                           </div>
                         ))}
@@ -471,8 +488,93 @@ function App() {
                       <p className="project-error">{project.error}</p>
                     )}
                     <div className="card-actions">
+                      {project.state === "STOPPED" &&
+                        !project.manifest.services?.some(
+                          (service) => service.id === "postgres",
+                        ) && (
+                          <Button
+                            disabled={action.isPending}
+                            onClick={() =>
+                              action.mutate({
+                                method: "project_add_postgres",
+                                params: { id: project.manifest.id },
+                              })
+                            }
+                          >
+                            {lang === "tr"
+                              ? "PostgreSQL ekle (Docker)"
+                              : "Add PostgreSQL (Docker)"}
+                          </Button>
+                        )}
+                      {project.services?.some(
+                        (service) =>
+                          service.id === "postgres" &&
+                          service.state === "RUNNING",
+                      ) && (
+                        <Button
+                          onClick={() =>
+                            connectionDetails.mutate(project.manifest.id)
+                          }
+                        >
+                          {lang === "tr"
+                            ? "PostgreSQL bağlantısı"
+                            : "PostgreSQL connection"}
+                        </Button>
+                      )}
+                      {project.services?.some(
+                        (service) =>
+                          service.id === "mailpit" &&
+                          service.state === "RUNNING" &&
+                          service.smtp_port,
+                      ) && (
+                        <Button
+                          onClick={() =>
+                            invoke("open_project", {
+                              id: project.manifest.id,
+                              inbox: true,
+                            }).catch((error) => setError(String(error)))
+                          }
+                        >
+                          {lang === "tr" ? "Posta kutusunu aç" : "Open inbox"}
+                        </Button>
+                      )}
+                      {project.state === "STOPPED" &&
+                        !project.manifest.services?.some(
+                          (service) => service.id === "mailpit",
+                        ) && (
+                          <Button
+                            disabled={action.isPending}
+                            onClick={() =>
+                              action.mutate({
+                                method: "project_add_mailpit",
+                                params: { id: project.manifest.id },
+                              })
+                            }
+                          >
+                            {lang === "tr"
+                              ? "Mailpit ekle (Docker)"
+                              : "Add Mailpit (Docker)"}
+                          </Button>
+                        )}
+                      {project.state === "STOPPED" &&
+                        !project.manifest.services?.some(
+                          (service) => service.id === "redis",
+                        ) && (
+                          <Button
+                            disabled={action.isPending}
+                            onClick={() =>
+                              action.mutate({
+                                method: "project_add_redis",
+                                params: { id: project.manifest.id },
+                              })
+                            }
+                          >
+                            {lang === "tr"
+                              ? "Redis ekle (Docker)"
+                              : "Add Redis (Docker)"}
+                          </Button>
+                        )}
                       {["RUNNING", "STOPPED"].includes(project.state) &&
-                        !project.manifest.services?.length &&
                         runtimes.data?.some(
                           (runtime) =>
                             runtime.id ===
@@ -620,6 +722,46 @@ function App() {
         </footer>
       </main>
       {wizard && <ProjectWizard lang={lang} onClose={() => setWizard(false)} />}
+      {connectionDetails.data && (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="PostgreSQL"
+          >
+            <h2>PostgreSQL</h2>
+            <p>
+              {connectionDetails.data.host}:{connectionDetails.data.port} /{" "}
+              {connectionDetails.data.database}
+            </p>
+            <p>
+              {lang === "tr" ? "Kullanıcı" : "User"}{" "}
+              {connectionDetails.data.user}
+            </p>
+            <label htmlFor="postgres-password">
+              {lang === "tr" ? "Parola" : "Password"}
+            </label>
+            <input
+              id="postgres-password"
+              value={connectionDetails.data.password}
+              readOnly
+            />
+            <Button onClick={() => connectionDetails.reset()}>
+              {lang === "tr" ? "Kapat" : "Close"}
+            </Button>
+            <Button
+              disabled={postgresBackup.isPending}
+              onClick={() =>
+                postgresBackup.mutate(connectionDetails.variables!)
+              }
+            >
+              {lang === "tr" ? "SQL yedeği oluştur" : "Create SQL backup"}
+            </Button>
+            {postgresBackup.isSuccess && <p>{postgresBackup.data}</p>}
+          </section>
+        </div>
+      )}
       {serverSwitch && (
         <div className="modal-backdrop">
           <section

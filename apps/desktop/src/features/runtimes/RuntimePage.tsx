@@ -42,6 +42,7 @@ const names: Record<string, string> = {
   caddy: "Caddy",
   apache: "Apache",
   nginx: "Nginx",
+  "php-cgi": "PHP CGI",
   python: "Python",
   rust: "Rust / Cargo",
 };
