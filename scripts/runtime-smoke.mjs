@@ -73,8 +73,12 @@ try {
   console.log(
     "PASS publisher digest, isolated staged installation, observed runtime version and managed project lifecycle",
   );
-  if (process.env.DOCKON_EXTENDED_RUNTIMES === "1") {
-    for (const runtime of ["php", "dotnet", "go", "caddy", "apache", "nginx"]) {
+  const extended = process.env.DOCKON_EXTENDED_RUNTIMES === "1";
+  const web = process.env.DOCKON_WEB_RUNTIMES === "1";
+  if (extended || web) {
+    const runtimes = extended ? ["php", "dotnet", "go", "caddy"] : [];
+    runtimes.push("apache", "nginx");
+    for (const runtime of runtimes) {
       const catalog = await h.call("runtime_catalog", { runtime });
       if (!catalog.versions.length) {
         console.log(`SKIP ${runtime}: ${catalog.note}`);
@@ -101,6 +105,55 @@ try {
     console.log(
       "PASS extended runtime publisher downloads and executable version checks",
     );
+    if (process.platform === "win32" && process.arch === "x64") {
+      const installed = await h.call("runtime_installed");
+      const apache = installed.find((record) => record.runtime === "apache");
+      const nginx = installed.find((record) => record.runtime === "nginx");
+      const id = "switch-static-site";
+      await h.call("project_create", {
+        id,
+        name: "Switch static site",
+        root: join(h.data, id),
+        runtime_installation: apache.id,
+      });
+      const before = await h.action("start", id);
+      const rejected = await h.wait(
+        (
+          await h.call("project_switch_static_server", {
+            id,
+            runtime_installation: "unknown",
+          })
+        ).id,
+      );
+      assert.equal(rejected.status, "failed");
+      assert.equal(
+        (await fetch(`http://127.0.0.1:${before.port}/`)).status,
+        200,
+      );
+      for (const server of [nginx, apache]) {
+        const switched = await h.wait(
+          (
+            await h.call("project_switch_static_server", {
+              id,
+              runtime_installation: server.id,
+            })
+          ).id,
+        );
+        assert.equal(switched.status, "completed", switched.error);
+        const active = (await h.call("list")).find(
+          (project) => project.manifest.id === id,
+        );
+        assert.equal(active.manifest.runtime.installation_id, server.id);
+        assert.match(
+          await (await fetch(`http://127.0.0.1:${active.port}/`)).text(),
+          /Dockon · Apache/,
+        );
+      }
+      await h.action("stop", id);
+      console.log(
+        "PASS staged Apache/Nginx switching and rejected selection preservation",
+      );
+    }
   }
   await h.shutdown();
   const originals = Object.fromEntries(
