@@ -32,7 +32,7 @@ try {
   System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR") i.r1'
   ${If} $1 != -1
     IntOp $2 $1 & 0x410
-    ${If} $2 != 0x10
+    ${If} $2 != 16
     ${OrIf} $R0 != $INSTDIR
       Abort "C:\dockon already exists and is not a registered Dockon installation."
     ${EndIf}
