@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { version } from "../package.json";
 import { createRoot } from "react-dom/client";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import {
@@ -847,7 +848,7 @@ function App() {
           <span>
             <Circle size={6} fill="currentColor" /> DOCKON LOCAL ENGINE
           </span>
-          <span>v0.1.0 · {t.foundation}</span>
+          <span>v{version} · {t.foundation}</span>
         </footer>
       </main>
       {wizard && <ProjectWizard lang={lang} folder={folder} workspaceRoot={workspace.data?.root} onClose={() => setWizard(false)} />}

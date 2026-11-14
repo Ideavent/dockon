@@ -53,6 +53,8 @@ The browser/native UI checks expect the Vite dev server to be running (`pnpm dev
 
 ## Windows x64 installer
 
+Increment the workspace, desktop package and Tauri versions for each installer release. Regenerate `Cargo.lock` after changing the workspace version. The setup filename, Windows installed-app version and Dockon footer show the release version.
+
 Run `./scripts/Build-WindowsInstaller.ps1` from PowerShell after installing the development dependencies. The setup executable and its SHA-256 file appear in `target/x86_64-pc-windows-msvc/release/bundle/nsis`. The installer uses administrator elevation to put application binaries in `C:\dockon`. Dockon runs under the signed-in user's account and stores project metadata, runtimes and backups in their user data directory. Close the desktop app and run `C:\dockon\dockonctl.exe shutdown` before updating or uninstalling. Uninstall preserves user data.
 
 The current installer is an unsigned development build. Windows/macOS/Linux foundation, Node runtime, Node/Python/Rust project profiles and local routing checks passed in the configured GitHub repository.

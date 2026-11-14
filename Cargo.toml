@@ -4,7 +4,7 @@ members = ["crates/core", "crates/ipc", "crates/persistence", "crates/provider-n
 default-members = ["crates/daemon", "examples/hello-http"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [workspace.dependencies]
