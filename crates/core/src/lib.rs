@@ -523,6 +523,7 @@ pub enum Command {
     RouterStop,
     Health,
     Capabilities,
+    Diagnostics,
     RuntimeCatalog {
         runtime: String,
     },

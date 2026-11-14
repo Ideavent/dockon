@@ -1,17 +1,17 @@
 # Delivery status
 
-Work is in Sprint 03. Later sprints must not be called complete before their implementations and acceptance checks pass.
+Work spans the remaining runtime and database acceptance checks and the first Sprint 05 diagnostics.
 
 | Sprint | Status |
 |---|---|
 | 01 foundation and lifecycle | Complete: Windows host/native UI checks and Windows/macOS/Linux CI passed |
 | 02 hybrid provider and isolation | Complete: Windows/macOS/Linux CI and Linux Docker integration passed at 4138370 |
 | 03 runtimes and web | Apache/Nginx switching for static and FastCGI projects verified on Windows. .htaccess execution remains pending. |
-| 04 databases, cache, mail | In progress. Redis, Mailpit and PostgreSQL Docker presets passed local persistence checks. |
-| 05 updates, backup, diagnostics | Pending |
+| 04 databases, cache, mail | Redis, Mailpit, PostgreSQL, MySQL, MariaDB and MongoDB Docker presets passed local persistence checks. |
+| 05 updates, backup, diagnostics | Local aggregate diagnostics report and JSON export. Runtime updates and advisory lookup pending. |
 | 06 cloud AI | Pending |
 
-Unimplemented capabilities return not_implemented from health. No production installer or signed release exists yet.
+Windows x64 has an unsigned development installer with `C:\dockon` as its destination. Signed releases remain pending.
 
 Local checks passed: workspace build; Rust tests including malformed/oversized IPC frames, coalesced stream frames and SQLite recovery; warning-free Clippy; frontend production build; native lifecycle smoke; event subscription; browser localization/offline checks; real Windows Tauri/WebView2 import/start/HTTP/stop flow. Foundation CI passed on all three OS targets at ee1ccde. The intermediate 7003277 workflow failed because a cache action could not be resolved; ee1ccde fixed the action and passed.
 
@@ -27,4 +27,4 @@ Routing uses editable full domains with `.test` defaults, private Caddy CA stora
 
 Current implementation is on `codex/sprint03-runtimes`. The completed Sprint 02 checkpoint is on `main`. Windows checks passed managed Apache and Nginx installations, explicit executable registration, native static sites, live static-site switching, the Apache Docker sample and PHP/FastCGI import. See [web-server-boundary.md](web-server-boundary.md).
 
-Stopped projects can add Redis, Mailpit, PostgreSQL, MySQL, MariaDB or MongoDB with Docker. Local checks verified Redis and Mailpit data isolation, SMTP delivery and inbox persistence, and authenticated database writes and reads after restart for all four database engines. Each managed database password lives in the daemon's private data directory and is returned on an explicit connection details request. PostgreSQL backups up to 8 MiB can be restored to a new database after a SHA-256 integrity check. Native database providers, backup and restore for the other engines, Sprint 05–06 and the production installer remain pending.
+Stopped projects can add Redis, Mailpit, PostgreSQL, MySQL, MariaDB or MongoDB with Docker. Local checks verified Redis and Mailpit data isolation, SMTP delivery and inbox persistence, and authenticated database writes and reads after restart for all four database engines. Each managed database password lives in the daemon's private data directory and is returned on an explicit connection details request. PostgreSQL backups up to 8 MiB can be restored to a new database after a SHA-256 integrity check. Native database providers and backup and restore for the other engines remain pending.

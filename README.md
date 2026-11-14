@@ -49,6 +49,10 @@ The browser/native UI checks expect the Vite dev server to be running (`pnpm dev
 
 `runtime-smoke.mjs` downloads the current official Node LTS into an isolated test data directory, verifies its digest/version, runs a project and checks offline catalog recovery. Set `DOCKON_EXTENDED_RUNTIMES=1` to also download and verify supported PHP/.NET/Go/Caddy artifacts and launch project profiles. These are network integration checks, not publisher signature verification.
 
-Windows installed application target: C:\dockon. No production installer is available yet. Windows/macOS/Linux foundation, Node runtime, Node/Python/Rust project profiles and local routing checks passed in the configured GitHub repository. User projects and backups must survive uninstallation.
+## Windows x64 installer
+
+Run `./scripts/Build-WindowsInstaller.ps1` from PowerShell after installing the development dependencies. The setup executable and its SHA-256 file appear in `target/x86_64-pc-windows-msvc/release/bundle/nsis`. The installer uses administrator elevation to put application binaries in `C:\dockon`. Dockon runs under the signed-in user's account and stores project metadata, runtimes and backups in their user data directory. Close the desktop app and run `C:\dockon\dockonctl.exe shutdown` before updating or uninstalling. Uninstall preserves user data.
+
+The current installer is an unsigned development build. Windows/macOS/Linux foundation, Node runtime, Node/Python/Rust project profiles and local routing checks passed in the configured GitHub repository.
 
 The Local domains page defaults project names to `.test` and accepts edited full hostnames. Select a Caddy installation, projects and unprivileged ports, then preview and apply. The router does not start project processes. Hosts records and user CA trust have separate permission previews. Tests never apply changes to real system hosts or trust stores; live permission integration remains unverified. Windows trust targets the current user's ROOT store; macOS/Linux automatic trust is not yet supported.

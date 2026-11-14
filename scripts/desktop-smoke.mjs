@@ -24,7 +24,13 @@ if (process.env.DOCKON_CADDY_EXECUTABLE)
     dirname(process.env.DOCKON_CADDY_EXECUTABLE) +
     ";" +
     (process.env.PATH || "");
-const app = spawn(join(root, "target/debug/dockon-desktop.exe"), [], {
+const appPath = process.env.DOCKON_DESKTOP_EXECUTABLE
+  ? resolve(process.env.DOCKON_DESKTOP_EXECUTABLE)
+  : join(root, "target/debug/dockon-desktop.exe");
+const appOrigin = process.env.DOCKON_DESKTOP_EXECUTABLE
+  ? "http://tauri.localhost"
+  : "http://localhost:1420";
+const app = spawn(appPath, [], {
   env,
   windowsHide: true,
   stdio: "ignore",
@@ -45,7 +51,7 @@ try {
     page = browser
       .contexts()
       .flatMap((c) => c.pages())
-      .find((p) => p.url().startsWith("http://localhost:1420"));
+      .find((p) => URL.canParse(p.url()) && new URL(p.url()).origin === appOrigin);
     if (page) break;
     await new Promise((r) => setTimeout(r, 100));
   }
@@ -167,6 +173,15 @@ try {
   assert.match(await (await fetch(wizardLink)).text(), /dockon · Node.js/);
   await card.getByRole("button", { name: "Durdur", exact: true }).click();
   await card.getByRole("button", { name: "Başlat", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Tanılama", exact: true }).click();
+  const report = page.getByRole("region", { name: "Durum raporu" }).locator("pre");
+  await report.waitFor();
+  const reportText = await report.textContent();
+  assert.equal(JSON.parse(reportText).project_counts.STOPPED, 2);
+  assert.ok(JSON.parse(reportText).runtimes.installed >= 1);
+  assert.doesNotMatch(reportText, /ui-example|wizard-node|executable|password|port|token/i);
+  await expect(page.getByRole("button", { name: "JSON indir" })).toBeEnabled();
+  await page.getByRole("button", { name: /^Projeler/ }).click();
   console.log(
     "PASS native runtime opt-in and new project wizard with real selected-runtime HTTP server",
   );

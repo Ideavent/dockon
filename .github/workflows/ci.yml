@@ -51,3 +51,15 @@ jobs:
       - run: node scripts/router-smoke.mjs
       - if: runner.os == 'Linux'
         run: node scripts/hybrid-smoke.mjs
+      - if: runner.os == 'Windows'
+        name: Build and verify the Windows installer
+        shell: pwsh
+        run: |
+          $package = ./scripts/Build-WindowsInstaller.ps1 | Select-Object -Last 1
+          ./scripts/Test-WindowsInstaller.ps1 -Package $package.FullName
+      - if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dockon-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/dockon_*
+          if-no-files-found: error

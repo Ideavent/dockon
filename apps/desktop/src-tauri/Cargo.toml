@@ -2,6 +2,9 @@
 name = "dockon-desktop"
 version.workspace = true
 edition.workspace = true
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 [dependencies]

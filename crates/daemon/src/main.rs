@@ -1,3 +1,5 @@
+mod diagnostics;
+
 use anyhow::Result;
 use dockon_core::{Command, Manifest, Request, Response};
 use dockon_ipc::{read_json, write_json, Connection};
@@ -211,6 +213,7 @@ async fn serve(
             Command::RouterApply {token} => {state.router.apply(&token,&state.projects.list().await?).await?;Response::success(state.router.status().await?)},
             Command::RouterStop => {state.router.stop().await?;Response::success(state.router.status().await?)},
             Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"http_tcp", "container":"digest_pinned_http_tcp", "ai":"not_implemented"})),
+            Command::Diagnostics => Response::success(diagnostics::report(&state).await?),
             Command::Capabilities => {
                 let (docker,podman)=tokio::join!(dockon_provider_container::capability(dockon_core::ContainerEngine::Docker),dockon_provider_container::capability(dockon_core::ContainerEngine::Podman));
                 Response::success(serde_json::json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"native":"http","docker":docker,"podman":podman,"ai":"not_implemented"}))

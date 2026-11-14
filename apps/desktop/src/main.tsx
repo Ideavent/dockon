@@ -21,6 +21,7 @@ import {
   Globe,
   Plus,
   Circle,
+  Stethoscope,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import "./styles.css";
@@ -28,6 +29,7 @@ import { request, type Reply } from "./ipc/client";
 import { RuntimePage } from "./features/runtimes/RuntimePage";
 import { ProjectWizard } from "./features/projects/ProjectWizard";
 import { RouterPage } from "./features/routing/RouterPage";
+import { DiagnosticsPage } from "./features/diagnostics/DiagnosticsPage";
 
 type Project = {
   manifest: {
@@ -72,7 +74,8 @@ const words = {
     manifest: "Manifest dosyasının tam yolu",
     local: "Yerel çalışma alanı",
     noEvents: "Proje olayları burada görünecek.",
-    foundation: "Geliştirme sürümü · Sprint 03",
+    foundation: "Geliştirme sürümü",
+    diagnostics: "Tanılama",
     native: "Yerel süreç",
     open: "Tarayıcıda aç",
     cancel: "Vazgeç",
@@ -99,7 +102,8 @@ const words = {
     manifest: "Absolute path to manifest file",
     local: "Local workspace",
     noEvents: "Project events will appear here.",
-    foundation: "Development · Sprint 03",
+    foundation: "Development build",
+    diagnostics: "Diagnostics",
     native: "Native process",
     open: "Open in browser",
     cancel: "Cancel",
@@ -111,7 +115,7 @@ const words = {
   },
 };
 function App() {
-  const [page, setPage] = useState<"projects" | "runtimes" | "routing">(
+  const [page, setPage] = useState<"projects" | "runtimes" | "routing" | "diagnostics">(
     "projects",
   );
   const [lang, setLang] = useState<"tr" | "en">("tr");
@@ -303,7 +307,14 @@ function App() {
           <Globe size={18} />
           {lang === "tr" ? "Yerel adresler" : "Local domains"}
         </button>
-        <a className="nav-link" href="#activity">
+        <button
+          className={page === "diagnostics" ? "nav-current" : "nav-link"}
+          onClick={() => setPage("diagnostics")}
+        >
+          <Stethoscope size={18} />
+          {t.diagnostics}
+        </button>
+        <a className="nav-link" href="#activity" onClick={() => setPage("projects")}>
           <Activity size={18} />
           {t.logs}
         </a>
@@ -323,6 +334,8 @@ function App() {
             WORKSPACE <span className="slash">/</span>{" "}
             {page === "projects"
               ? t.projects
+              : page === "diagnostics"
+                ? t.diagnostics
               : page === "routing"
                 ? lang === "tr"
                   ? "Yerel adresler"
@@ -350,7 +363,9 @@ function App() {
           </div>
         </header>
         <div className="content">
-          {page === "routing" ? (
+          {page === "diagnostics" ? (
+            <DiagnosticsPage connected={connected} lang={lang} />
+          ) : page === "routing" ? (
             <RouterPage connected={connected} lang={lang} />
           ) : page === "runtimes" ? (
             <RuntimePage connected={connected} lang={lang} />

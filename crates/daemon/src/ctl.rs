@@ -7,6 +7,7 @@ async fn main() -> Result<()> {
     let command = match args.first().map(String::as_str) {
         Some("health") => Command::Health,
         Some("capabilities") => Command::Capabilities,
+        Some("diagnostics") => Command::Diagnostics,
         Some("runtimes") => Command::RuntimeInstalled,
         Some("catalog") => Command::RuntimeCatalog {
             runtime: args.get(1).context("Runtime id required")?.clone(),
@@ -32,7 +33,7 @@ async fn main() -> Result<()> {
         },
         Some("shutdown") => Command::Shutdown,
         _ => bail!(
-            "Usage: dockonctl health|list|register <manifest>|start <id>|stop <id>|events|shutdown"
+            "Usage: dockonctl health|diagnostics|list|register <manifest>|start <id>|stop <id>|events|shutdown"
         ),
     };
     let response = dockon_ipc::call(command).await?;
