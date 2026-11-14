@@ -95,9 +95,12 @@ try {
   await page
     .getByRole("heading", { name: "UI example", exact: true })
     .waitFor();
-  await page.getByRole("button", { name: "Başlat", exact: true }).click();
+  const importedCard = page.locator(".project-card").filter({
+    has: page.getByRole("heading", { name: "UI example", exact: true }),
+  });
+  await importedCard.getByRole("button", { name: "Başlat", exact: true }).click();
   await page.getByText("STARTING", { exact: true }).first().waitFor();
-  await page.getByRole("button", { name: "Durdur", exact: true }).waitFor();
+  await importedCard.getByRole("button", { name: "Durdur", exact: true }).waitFor();
   await page.getByText("RUNNING", { exact: true }).first().waitFor();
   const link = await page
     .getByRole("link", { name: "Tarayıcıda aç", exact: true })
@@ -114,8 +117,8 @@ try {
     path: ".local/screenshots/desktop-running.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "Durdur", exact: true }).click();
-  await page.getByRole("button", { name: "Başlat", exact: true }).waitFor();
+  await importedCard.getByRole("button", { name: "Durdur", exact: true }).click();
+  await importedCard.getByRole("button", { name: "Başlat", exact: true }).waitFor();
   await assert.rejects(fetch(link));
   await page
     .getByRole("button", { name: "Çalışma ortamları", exact: true })
