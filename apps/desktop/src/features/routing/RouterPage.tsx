@@ -62,8 +62,8 @@ export function RouterPage({
   });
   const [settings, setSettings] = useState<Settings>({
     runtime_installation: "",
-    http_port: 8080,
-    https_port: 8443,
+    http_port: navigator.userAgent.includes("Windows") ? 80 : 8080,
+    https_port: navigator.userAgent.includes("Windows") ? 443 : 8443,
     routes: [],
   });
   const [loaded, setLoaded] = useState(false),
@@ -187,7 +187,7 @@ export function RouterPage({
             HTTP {tr ? "portu" : "port"}
             <input
               type="number"
-              min={1024}
+              min={80}
               max={65535}
               value={settings.http_port}
               disabled={busy}
@@ -201,7 +201,7 @@ export function RouterPage({
             HTTPS {tr ? "portu" : "port"}
             <input
               type="number"
-              min={1024}
+              min={443}
               max={65535}
               value={settings.https_port}
               disabled={busy}

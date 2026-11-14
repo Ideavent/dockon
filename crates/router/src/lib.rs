@@ -34,6 +34,7 @@ pub struct Status {
     pub pid: Option<u32>,
     pub error: Option<String>,
     pub root_certificate: Option<PathBuf>,
+    pub certificate_trusted: bool,
     pub logs: Vec<String>,
 }
 struct Pending {
@@ -115,11 +116,12 @@ impl Router {
             .join("storage/pki/authorities/local/root.crt")
     }
     fn render(&self, settings: &RouterSettings, projects: &[Project]) -> Result<String> {
-        if settings.http_port < 1024
-            || settings.https_port < 1024
+        let supported = |port, standard| port >= 1024 || (cfg!(windows) && port == standard);
+        if !supported(settings.http_port, 80)
+            || !supported(settings.https_port, 443)
             || settings.http_port == settings.https_port
         {
-            bail!("Choose distinct unprivileged HTTP/HTTPS ports between 1024 and 65535");
+            bail!("Choose distinct web ports. Windows supports HTTP 80 and HTTPS 443, or ports from 1024 through 65535.");
         }
         if settings.routes.is_empty() || settings.routes.len() > 100 {
             bail!("Configure between 1 and 100 routes");
@@ -180,6 +182,7 @@ impl Router {
         if !running && state.instance.is_some() {
             state.error = Some("Router process exited; review logs and apply a new plan".into());
         }
+        let certificate_path = self.certificate();
         Ok(Status {
             settings: state.settings.clone(),
             running,
@@ -189,7 +192,8 @@ impl Router {
                 None
             },
             error: state.error.clone(),
-            root_certificate: self.certificate().is_file().then(|| self.certificate()),
+            certificate_trusted: self.certificate_trusted(),
+            root_certificate: certificate_path.is_file().then_some(certificate_path),
             logs: self.logs.lock().await.iter().cloned().collect(),
         })
     }

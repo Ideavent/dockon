@@ -525,6 +525,10 @@ pub enum Command {
     Capabilities,
     Diagnostics,
     WorkspaceFolders,
+    ProjectPhpVersion {
+        id: String,
+        runtime_installation: String,
+    },
     WorkspaceCreate {
         slug: String,
         name: String,

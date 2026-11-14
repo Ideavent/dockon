@@ -81,8 +81,28 @@ async fn open_project(
         return Err("Project does not have a ready HTTP endpoint".into());
     }
     let port = project.port.ok_or("Project port unavailable")?;
+    let mut url = format!("http://127.0.0.1:{port}");
+    if let Ok(response) = dockon_ipc::call(dockon_core::Command::RouterStatus).await {
+        if response.ok && response.data["running"].as_bool() == Some(true) {
+            if let Ok(settings) = serde_json::from_value::<dockon_core::RouterSettings>(
+                response.data["settings"].clone(),
+            ) {
+                if let Some(route) = settings.routes.iter().find(|route| route.project_id == id) {
+                    let (scheme, port, default_port) = if route.https {
+                        ("https", settings.https_port, 443)
+                    } else {
+                        ("http", settings.http_port, 80)
+                    };
+                    url = format!("{scheme}://{}", route.domain);
+                    if port != default_port {
+                        url.push_str(&format!(":{port}"));
+                    }
+                }
+            }
+        }
+    }
     app.opener()
-        .open_url(format!("http://127.0.0.1:{port}"), None::<&str>)
+        .open_url(url, None::<&str>)
         .map_err(|e| e.to_string())
 }
 

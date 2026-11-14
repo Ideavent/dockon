@@ -18,6 +18,7 @@ const env = {
   ...process.env,
   DOCKON_DATA_DIR: data,
   DOCKON_WWW_DIR: process.env.DOCKON_WWW_DIR || join(data, "www"),
+  WEBVIEW2_USER_DATA_FOLDER: join(data, "webview"),
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port} --remote-debugging-address=127.0.0.1`,
 };
 if (process.env.DOCKON_CADDY_EXECUTABLE)
@@ -177,7 +178,8 @@ try {
   assert.match(await (await fetch(wizardLink)).text(), /dockon · Node.js/);
   await card.getByRole("button", { name: "Durdur", exact: true }).click();
   await card.getByRole("button", { name: "Başlat", exact: true }).waitFor();
-  await card.getByRole("button", { name: "Ayarlar", exact: true }).click();
+  await card.click({ button: "right" });
+  await page.getByRole("group", { name: "Proje menüsü" }).getByRole("button", { name: "Proje ayarları" }).click();
   const projectSettings = page.getByRole("dialog", { name: "Proje ayarları" });
   await expect(projectSettings.getByRole("checkbox", { name: "SSL kullan (HTTPS)" })).toBeVisible();
   await projectSettings.getByRole("button", { name: "Kapat", exact: true }).click();
@@ -213,8 +215,9 @@ try {
       .click();
     await page.locator(".runtime-item").filter({ hasText: "Caddy" }).waitFor();
     await page
-      .getByRole("button", { name: "Yerel adresler", exact: true })
+      .getByRole("button", { name: "Seçenekler", exact: true })
       .click();
+    await page.getByRole("button", { name: "Servisler ve Portlar", exact: true }).click();
     const caddySelect = page.getByRole("combobox", { name: /Caddy sürümü/ });
     await caddySelect.selectOption({
       label: (await caddySelect.locator("option").allTextContents()).find((t) =>

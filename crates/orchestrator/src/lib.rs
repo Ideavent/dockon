@@ -318,6 +318,35 @@ impl Orchestrator {
         });
         Ok(reply)
     }
+    pub async fn set_php_version(&self, id: &str, installation_id: &str) -> Result<Project> {
+        let entry = self.entry(id).await?;
+        let _guard = entry.lifecycle.lock().await;
+        let mut project = entry.project.write().await;
+        if project.state != State::Stopped || self.closing.load(Ordering::Acquire) {
+            bail!("Stop the project before changing its PHP version");
+        }
+        let installation = self.runtimes.selected(installation_id).await?;
+        if installation.runtime != "php-cgi" {
+            bail!("Select a PHP FastCGI installation");
+        }
+        let mut manifest = project.manifest.clone();
+        let service = manifest
+            .services
+            .iter_mut()
+            .find(|service| service.id == "php-cgi")
+            .context("The project has no PHP FastCGI component")?;
+        let binding = service
+            .runtime
+            .as_mut()
+            .context("PHP runtime binding unavailable")?;
+        binding.installation_id = installation.id;
+        service.executable = installation.executable;
+        manifest.validate()?;
+        self.store.update_manifest(&manifest).await?;
+        project.manifest = manifest;
+        Ok(project.clone())
+    }
+
     async fn switch_static_server(&self, id: &str, installation_id: &str) -> Result<Project> {
         let entry = self.entry(id).await?;
         let _guard = entry.lifecycle.lock().await;

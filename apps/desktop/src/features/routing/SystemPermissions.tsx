@@ -16,9 +16,11 @@ type Plan = {
 export function SystemPermissions({
   lang,
   hasCertificate,
+  onApplied,
 }: {
   lang: "tr" | "en";
   hasCertificate: boolean;
+  onApplied?: () => void;
 }) {
   const tr = lang === "tr";
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -41,6 +43,7 @@ export function SystemPermissions({
     onSuccess: () => {
       setDone(true);
       setPlan(null);
+      onApplied?.();
     },
   });
   const busy = preview.isPending || apply.isPending;
@@ -62,7 +65,7 @@ export function SystemPermissions({
         {hasCertificate && (
           <>
             <Button disabled={busy} onClick={() => preview.mutate("trust_ca")}>
-              {tr ? "CA güvenini önizle" : "Preview CA trust"}
+              {tr ? "Dockon sertifikasına güven" : "Trust Dockon certificate"}
             </Button>
             <Button
               disabled={busy}

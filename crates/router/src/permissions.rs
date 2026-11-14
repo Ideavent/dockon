@@ -190,6 +190,11 @@ fn certificate(path: &Path) -> Result<Vec<u8>> {
     Ok(base64::engine::general_purpose::STANDARD.decode(content)?)
 }
 impl Router {
+    pub(super) fn certificate_trusted(&self) -> bool {
+        certificate(&self.certificate())
+            .and_then(|der| platform_trusted(&der))
+            .unwrap_or(false)
+    }
     pub async fn permission_plan(&self, action: SystemAction) -> Result<PermissionPlan> {
         let expires = now()? + 300;
         let token = uuid::Uuid::new_v4().to_string();

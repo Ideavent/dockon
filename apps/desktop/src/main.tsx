@@ -42,7 +42,7 @@ type Project = {
     runtime?: { installation_id: string };
     provider?: "native" | "container";
     health?: { type: "http" | "tcp" };
-    services?: { id: string; provider?: "native" | "container" }[];
+    services?: { id: string; provider?: "native" | "container"; runtime?: { installation_id: string } }[];
   };
   state: string;
   pid: number | null;
@@ -132,6 +132,8 @@ function App() {
   const [folder, setFolder] = useState<{ name: string; path: string }>();
   const [serverSwitch, setServerSwitch] = useState("");
   const [settingsProject, setSettingsProject] = useState<Project>();
+  const [contextProject, setContextProject] = useState<{ project: Project; x: number; y: number }>();
+  const [settingsTab, setSettingsTab] = useState<"general" | "services">("general");
   const connectionDetails = useMutation({
     mutationFn: ({ id, engine }: { id: string; engine: string }) =>
       request<{
@@ -361,10 +363,10 @@ function App() {
         </button>
         <button
           className={page === "routing" ? "nav-current" : "nav-link"}
-          onClick={() => setPage("routing")}
+            onClick={() => setPage("routing")}
         >
           <Globe size={18} />
-          {lang === "tr" ? "Yerel adresler" : "Local domains"}
+          {lang === "tr" ? "Seçenekler" : "Options"}
         </button>
         <button
           className={page === "diagnostics" ? "nav-current" : "nav-link"}
@@ -397,8 +399,8 @@ function App() {
                 ? t.diagnostics
               : page === "routing"
                 ? lang === "tr"
-                  ? "Yerel adresler"
-                  : "Local domains"
+                  ? "Seçenekler"
+                  : "Options"
                 : lang === "tr"
                   ? "Çalışma ortamları"
                   : "Runtimes"}
@@ -425,7 +427,36 @@ function App() {
           {page === "diagnostics" ? (
             <DiagnosticsPage connected={connected} lang={lang} />
           ) : page === "routing" ? (
-            <RouterPage connected={connected} lang={lang} />
+            <>
+              <div className="settings-tabs" aria-label={lang === "tr" ? "Seçenekler" : "Options"}>
+                <Button variant={settingsTab === "general" ? "primary" : "secondary"} onClick={() => setSettingsTab("general")}>{lang === "tr" ? "Genel" : "General"}</Button>
+                <Button variant={settingsTab === "services" ? "primary" : "secondary"} onClick={() => setSettingsTab("services")}>{lang === "tr" ? "Servisler ve Portlar" : "Services and Ports"}</Button>
+              </div>
+              {settingsTab === "general" ? (
+                <section className="runtime-catalog">
+                  <h2>{lang === "tr" ? "Yerel çalışma alanı" : "Local workspace"}</h2>
+                  <p>{lang === "tr" ? "Proje kök klasörü" : "Project root"} · <code>{workspace.data?.root ?? "—"}</code></p>
+                  <p>{lang === "tr" ? "Varsayılan yerel adres" : "Default local address"} · <code>{"{name}.test"}</code></p>
+                  <Button variant="secondary" onClick={() => setLang(lang === "tr" ? "en" : "tr")}>{lang === "tr" ? "Dil · Türkçe" : "Language · English"}</Button>
+                </section>
+              ) : <>
+                <section className="runtime-catalog">
+                  <h2>{lang === "tr" ? "Kurulu bileşenler" : "Installed components"}</h2>
+                  <dl className="service-settings-list">
+                    <dt>{lang === "tr" ? "Web sunucuları" : "Web servers"}</dt>
+                    <dd>{runtimes.data?.filter((item) => ["apache", "nginx"].includes(item.runtime))
+                      .map((item) => `${item.runtime === "apache" ? "Apache" : "Nginx"} ${item.version}`).join(" · ") || "—"}</dd>
+                    <dt>PHP (FastCGI)</dt>
+                    <dd>{runtimes.data?.filter((item) => item.runtime === "php-cgi").map((item) => item.version).join(" · ") || "—"}</dd>
+                    {localServices.data?.mailpit_available && <>
+                      <dt>Mailpit</dt>
+                      <dd>SMTP 1025 · HTTP 8025 · {localServices.data.mailpit_running ? t.running : (lang === "tr" ? "Durdu" : "Stopped")}</dd>
+                    </>}
+                  </dl>
+                </section>
+                <RouterPage connected={connected} lang={lang} />
+              </>}
+            </>
           ) : page === "runtimes" ? (
             <RuntimePage connected={connected} lang={lang} />
           ) : (
@@ -562,7 +593,11 @@ function App() {
               </div>
               <section className="project-grid">
                 {items.map((project) => (
-                  <article className="project-card" key={project.manifest.id}>
+                  <article className="project-card" key={project.manifest.id} onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextProject({ project, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 220)),
+                      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 145)) });
+                  }}>
                     <div className="card-top">
                       <div className="project-icon">
                         <Terminal size={22} />
@@ -816,8 +851,31 @@ function App() {
         </footer>
       </main>
       {wizard && <ProjectWizard lang={lang} folder={folder} workspaceRoot={workspace.data?.root} onClose={() => setWizard(false)} />}
-      {settingsProject && <ProjectSettings lang={lang} id={settingsProject.manifest.id} name={settingsProject.manifest.name}
-        root={settingsProject.manifest.root} onClose={() => setSettingsProject(undefined)} />}
+      {contextProject && (
+        <div className="project-menu-overlay" onClick={() => setContextProject(undefined)}
+          onKeyDown={(event) => { if (event.key === "Escape") setContextProject(undefined); }}>
+          <div className="project-menu" style={{ left: contextProject.x, top: contextProject.y }} role="group"
+            aria-label={lang === "tr" ? "Proje menüsü" : "Project menu"} onClick={(event) => event.stopPropagation()}>
+            <button autoFocus onClick={() => { setSettingsProject(contextProject.project); setContextProject(undefined); }}>
+              <Settings size={15} /> {lang === "tr" ? "Proje ayarları" : "Project settings"}
+            </button>
+            <button disabled={action.isPending || !["RUNNING", "STOPPED", "FAILED", "DEGRADED"].includes(contextProject.project.state)}
+              onClick={() => {
+                action.mutate({ method: ["RUNNING", "DEGRADED"].includes(contextProject.project.state) ? "stop" : "start", params: { id: contextProject.project.manifest.id } });
+                setContextProject(undefined);
+              }}>
+              <Play size={15} /> {["RUNNING", "DEGRADED"].includes(contextProject.project.state) ? t.stop : t.start}
+            </button>
+          </div>
+        </div>
+      )}
+      {settingsProject && (() => {
+        const project = items.find((entry) => entry.manifest.id === settingsProject.manifest.id) ?? settingsProject;
+        return <ProjectSettings lang={lang} id={project.manifest.id} name={project.manifest.name}
+          root={project.manifest.root} serverId={project.manifest.runtime?.installation_id}
+          phpId={project.manifest.services?.find((service) => service.id === "php-cgi")?.runtime?.installation_id}
+          stopped={project.state === "STOPPED"} runtimes={runtimes.data ?? []} onClose={() => setSettingsProject(undefined)} />;
+      })()}
       {connectionDetails.data && (
         <div className="modal-backdrop">
           <section

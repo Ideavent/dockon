@@ -230,6 +230,7 @@ async fn serve(
             Command::Health => Response::success(serde_json::json!({"name":"dockon", "version":env!("CARGO_PKG_VERSION"), "native":"http_tcp", "container":"digest_pinned_http_tcp", "ai":"not_implemented"})),
             Command::Diagnostics => Response::success(diagnostics::report(&state).await?),
             Command::WorkspaceFolders => Response::success(workspace::folders()?),
+            Command::ProjectPhpVersion { id, runtime_installation } => Response::success(state.projects.set_php_version(&id, &runtime_installation).await?),
             Command::WorkspaceCreate { slug, name, runtime_installation, php_cgi_installation } => {
                 let root = workspace::project_path(&slug)?;
                 if state.projects.list().await?.iter().any(|p| p.manifest.id == slug) {
@@ -252,9 +253,13 @@ async fn serve(
                     None => {
                         let caddy = state.runtimes.installed().await?.into_iter().find(|r| r.runtime == "caddy")
                             .ok_or_else(|| anyhow::anyhow!("Install Caddy from Runtimes to enable local addresses"))?;
-                        dockon_core::RouterSettings { runtime_installation: caddy.id, http_port: 8080, https_port: 8443, routes: vec![] }
+                        dockon_core::RouterSettings { runtime_installation: caddy.id, http_port: if cfg!(windows) {80} else {8080}, https_port: if cfg!(windows) {443} else {8443}, routes: vec![] }
                     }
                 };
+                if cfg!(windows) && (settings.http_port, settings.https_port) == (8080, 8443) {
+                    settings.http_port = 80;
+                    settings.https_port = 443;
+                }
                 if let Some(route) = settings.routes.iter_mut().find(|route| route.project_id == id) {
                     route.domain = domain;
                     route.https = https;
