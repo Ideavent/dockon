@@ -15,7 +15,7 @@ jobs:
           - runner: macos-15
             arch: arm64
             target: aarch64-apple-darwin
-          - runner: macos-15-intel
+          - runner: macos-26-intel
             arch: x64
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
@@ -31,10 +31,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Build and verify the macOS installer
+      - name: Build the macOS installer
+        run: bash scripts/build-macos-installer.sh
+        timeout-minutes: 20
+      - name: Verify the mounted macOS installer
         shell: bash
+        timeout-minutes: 4
         run: |
-          bash scripts/build-macos-installer.sh
           dmgs=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
           test "${#dmgs[@]}" -eq 1
           bash scripts/test-macos-installer.sh "${dmgs[0]}"
