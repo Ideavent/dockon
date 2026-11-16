@@ -903,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-core"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "serde",
@@ -913,14 +913,13 @@ dependencies = [
 
 [[package]]
 name = "dockon-daemon"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "dockon-core",
  "dockon-ipc",
  "dockon-orchestrator",
  "dockon-persistence",
- "dockon-provider-container",
  "dockon-provider-native",
  "dockon-router",
  "dockon-runtime-manager",
@@ -937,7 +936,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-desktop"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "dockon-core",
  "dockon-ipc",
@@ -946,11 +945,12 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "dockon-hello-http"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "tokio",
@@ -958,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-ipc"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "directories",
@@ -970,15 +970,15 @@ dependencies = [
 
 [[package]]
 name = "dockon-orchestrator"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "dockon-core",
  "dockon-persistence",
- "dockon-provider-container",
  "dockon-provider-native",
  "dockon-runtime-manager",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-persistence"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "dockon-core",
@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-provider-container"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "dockon-core",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-provider-native"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "dockon-core",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-router"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "dockon-runtime-manager"
-version = "0.1.1"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "chrono",

@@ -1,190 +1,149 @@
+use crate::local_db::{Database, Kind};
 use crate::ports::{PortAllocator, PortLease};
 use crate::EventBus;
 use anyhow::{bail, Context, Result};
 use dockon_core::{HealthCheck, Manifest, Provider};
-use dockon_provider_container::{ContainerInstance, ContainerProvider};
 use dockon_provider_native::Instance;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 
-pub(crate) enum OwnedInstance {
-    Native {
-        process: Instance,
-        _lease: PortLease,
-    },
-    Container {
-        process: ContainerInstance,
-        _lease: PortLease,
-        smtp: Option<PortLease>,
-    },
+pub(crate) struct OwnedInstance {
+    process: Instance,
+    _lease: PortLease,
+    smtp: Option<PortLease>,
+    database: Option<Database>,
 }
 impl OwnedInstance {
+    pub fn database(&self) -> Option<&Database> {
+        self.database.as_ref()
+    }
     pub fn smtp_port(&self) -> Option<u16> {
-        match self {
-            Self::Container { smtp, .. } => smtp.as_ref().map(|lease| lease.port),
-            Self::Native { .. } => None,
-        }
+        self.smtp.as_ref().map(|lease| lease.port)
     }
     pub fn pid(&self) -> Option<u32> {
-        match self {
-            Self::Native { process, .. } => process.child.id(),
-            Self::Container { .. } => None,
-        }
-    }
-    pub fn container_id(&self) -> Option<String> {
-        match self {
-            Self::Native { .. } => None,
-            Self::Container { process, .. } => Some(process.id.clone()),
-        }
+        self.process.child.id()
     }
     pub async fn running(&mut self) -> Result<bool> {
-        match self {
-            Self::Native { process, .. } => Ok(process.child.try_wait()?.is_none()),
-            Self::Container { process, .. } => process.running().await,
-        }
+        Ok(self.process.child.try_wait()?.is_none())
     }
     pub async fn stop(&mut self, owner: &str) -> Result<()> {
-        match self {
-            Self::Native { process, .. } => process.stop(owner).await,
-            Self::Container { process, .. } => process.stop(owner).await,
+        if let Some(database) = &self.database {
+            if self.process.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            if database.stop().await.is_ok()
+                && tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    self.process.child.wait(),
+                )
+                .await
+                .is_ok_and(|result| result.is_ok())
+            {
+                return Ok(());
+            }
         }
+        self.process.stop(owner).await
     }
+}
+
+pub fn bundled_mailpit_path() -> Result<Option<PathBuf>> {
+    if !cfg!(windows) {
+        return Ok(None);
+    }
+    let exe = std::env::current_exe()?;
+    Ok(exe
+        .parent()
+        .map(|dir| dir.join("bin/mailpit/mailpit.exe"))
+        .filter(|file| file.is_file()))
 }
 
 pub(crate) async fn launch(
     manifest: &Manifest,
     events: EventBus,
-    providers: (
-        &ContainerProvider,
-        &PortAllocator,
-        &dockon_runtime_manager::RuntimeManager,
-    ),
+    providers: (&PortAllocator, &dockon_runtime_manager::RuntimeManager),
     data_dir: &Path,
     project: &str,
     alias: &str,
     environment: &BTreeMap<String, String>,
 ) -> Result<(OwnedInstance, u16)> {
     manifest.validate()?;
-    let (containers, ports, runtimes) = providers;
+    let (ports, runtimes) = providers;
     let lease = ports.reserve(manifest.port)?;
     let port = lease.port;
-    let mut instance = match manifest.provider {
-        Provider::Native => {
-            let (prepared, environment) = runtimes
-                .prepare(manifest, data_dir, environment, port)
-                .await?;
-            let mut instance = Instance::spawn(&prepared, port, data_dir, &environment)?;
-            if let Some(stdout) = instance.child.stdout.take() {
-                capture(
-                    stdout,
-                    project.into(),
-                    alias.into(),
-                    "stdout",
-                    events.clone(),
-                );
-            }
-            if let Some(stderr) = instance.child.stderr.take() {
-                capture(
-                    stderr,
-                    project.into(),
-                    alias.into(),
-                    "stderr",
-                    events.clone(),
-                );
-            }
-            OwnedInstance::Native {
-                process: instance,
-                _lease: lease,
-            }
+    if manifest.provider != Provider::Native {
+        bail!("Choose a local workload");
+    }
+    let (mut prepared, environment) = runtimes
+        .prepare(manifest, data_dir, environment, port)
+        .await?;
+    let database = if let Ok(kind) = Kind::parse(alias) {
+        if kind.matches(&prepared.executable) && prepared.args.is_empty() {
+            Some(Database::prepare(kind, &mut prepared, data_dir, port).await?)
+        } else {
+            None
         }
-        Provider::Container => {
-            let spec = manifest
-                .container
-                .as_ref()
-                .context("Container configuration required")?;
-            events.lock().await.push(
-                project,
-                "provider",
-                &format!("Preparing pinned image and isolated resources for {alias}"),
-            );
-            let smtp = spec.smtp_port.map(|_| ports.reserve(0)).transpose()?;
-            let mut environment = environment.clone();
-            let password_key = match spec.image.as_str() {
-                dockon_core::POSTGRES_IMAGE => Some("POSTGRES_PASSWORD"),
-                dockon_core::MYSQL_IMAGE => Some("MYSQL_ROOT_PASSWORD"),
-                dockon_core::MARIADB_IMAGE => Some("MARIADB_ROOT_PASSWORD"),
-                dockon_core::MONGO_IMAGE => Some("MONGO_INITDB_ROOT_PASSWORD"),
-                _ => None,
-            };
-            if let Some(password_key) = password_key {
-                let path = data_dir.join(if spec.image == dockon_core::POSTGRES_IMAGE {
-                    "postgres-password"
-                } else {
-                    "database-password"
-                });
-                let password = match std::fs::read_to_string(&path) {
-                    Ok(password) => password,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        use std::io::Write;
-                        let password = format!(
-                            "{}{}",
-                            uuid::Uuid::new_v4().simple(),
-                            uuid::Uuid::new_v4().simple()
-                        );
-                        let mut file = std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&path)?;
-                        file.write_all(password.as_bytes())?;
-                        file.sync_all()?;
-                        password
-                    }
-                    Err(error) => return Err(error.into()),
-                };
-                environment.insert(password_key.into(), password);
-            }
-            if spec.image == dockon_core::POSTGRES_IMAGE {
-                environment.insert("POSTGRES_DB".into(), "dockon".into());
-                environment.insert("PGDATA".into(), "/dockon-data/postgres".into());
-            }
-            if spec.image == dockon_core::MYSQL_IMAGE {
-                environment.insert("MYSQL_DATABASE".into(), "dockon".into());
-                environment.insert("MYSQL_ROOT_HOST".into(), "%".into());
-            }
-            if spec.image == dockon_core::MARIADB_IMAGE {
-                environment.insert("MARIADB_DATABASE".into(), "dockon".into());
-                environment.insert("MARIADB_ROOT_HOST".into(), "%".into());
-            }
-            if spec.image == dockon_core::MONGO_IMAGE {
-                environment.insert("MONGO_INITDB_ROOT_USERNAME".into(), "dockon".into());
-                environment.insert("HOME".into(), "/tmp".into());
-            }
-            OwnedInstance::Container {
-                process: containers
-                    .start(
-                        project,
-                        &manifest.id,
-                        alias,
-                        spec,
-                        (port, smtp.as_ref().map(|lease| lease.port)),
-                        &environment,
-                    )
-                    .await?,
-                _lease: lease,
-                smtp,
-            }
-        }
+    } else {
+        None
     };
-    let ready = wait_ready(manifest, &mut instance, port).await;
-    if let Err(error) = ready {
-        if let OwnedInstance::Container {
-            process: container, ..
-        } = &instance
-        {
-            if let Ok(logs) = container.logs().await {
-                events.lock().await.push(project, "stderr", &logs);
-            }
+    let smtp = if alias == "mailpit"
+        && prepared.executable.ends_with("bin/mailpit/mailpit.exe")
+        && prepared.args.is_empty()
+    {
+        prepared.executable =
+            bundled_mailpit_path()?.context("Local Mailpit is missing from the Dockon package")?;
+        let smtp = ports.reserve(0)?;
+        prepared.args.extend(
+            [
+                format!("--listen=127.0.0.1:{port}"),
+                format!("--smtp=127.0.0.1:{}", smtp.port),
+                format!("--database={}", data_dir.join("mailpit.db").display()),
+                "--disable-version-check".into(),
+                "--allowed-hosts=127.0.0.1,localhost,mailpit".into(),
+            ]
+            .into_iter()
+            .map(dockon_core::LaunchArg::from),
+        );
+        Some(smtp)
+    } else {
+        None
+    };
+    let mut instance = Instance::spawn(&prepared, port, data_dir, &environment)?;
+    if let Some(stdout) = instance.child.stdout.take() {
+        capture(
+            stdout,
+            project.into(),
+            alias.into(),
+            "stdout",
+            events.clone(),
+        );
+    }
+    if let Some(stderr) = instance.child.stderr.take() {
+        capture(
+            stderr,
+            project.into(),
+            alias.into(),
+            "stderr",
+            events.clone(),
+        );
+    }
+    let mut instance = OwnedInstance {
+        process: instance,
+        _lease: lease,
+        smtp,
+        database,
+    };
+    let ready = async {
+        wait_ready(manifest, &mut instance, port).await?;
+        if let Some(database) = instance.database() {
+            database.initialize().await?;
         }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = ready {
         if let Err(cleanup) = instance.stop(&manifest.id).await {
             bail!("{error:#}; workload cleanup failed: {cleanup:#}");
         }
@@ -203,35 +162,27 @@ async fn wait_ready(manifest: &Manifest, instance: &mut OwnedInstance, port: u16
         if !instance.running().await? {
             bail!("Workload exited before readiness");
         }
-        let ready = if let OwnedInstance::Container { process, .. } = instance {
-            if let Some(spec) = &manifest.container {
-                process.database_ready(&spec.image).await?
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let ready = if let Some(ready) = ready {
-            ready
-        } else {
-            match &manifest.health {
-                HealthCheck::Http { path } => client
-                    .get(format!("http://127.0.0.1:{port}{path}"))
-                    .send()
-                    .await
-                    .is_ok_and(|r| r.status().is_success()),
-                HealthCheck::Tcp => tokio::time::timeout(
-                    std::time::Duration::from_millis(300),
-                    tokio::net::TcpStream::connect(("127.0.0.1", port)),
-                )
+        let ready = match &manifest.health {
+            HealthCheck::Http { path } => client
+                .get(format!("http://127.0.0.1:{port}{path}"))
+                .send()
                 .await
-                .is_ok_and(|r| r.is_ok()),
-            }
+                .is_ok_and(|r| r.status().is_success()),
+            HealthCheck::Tcp => tokio::time::timeout(
+                std::time::Duration::from_millis(300),
+                tokio::net::TcpStream::connect(("127.0.0.1", port)),
+            )
+            .await
+            .is_ok_and(|r| r.is_ok()),
         };
         if ready {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if instance.running().await? {
+            if instance.running().await?
+                && match instance.database() {
+                    Some(database) => database.ready().await,
+                    None => true,
+                }
+            {
                 return Ok(());
             }
         }
@@ -239,7 +190,7 @@ async fn wait_ready(manifest: &Manifest, instance: &mut OwnedInstance, port: u16
     }
     bail!("Readiness timed out")
 }
-fn capture(
+pub(crate) fn capture(
     stream: impl AsyncRead + Unpin + Send + 'static,
     id: String,
     alias: String,

@@ -6,7 +6,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -70,14 +70,41 @@ fn system_directory() -> Result<PathBuf> {
 }
 
 pub fn render_hosts(original: &[u8], installation: &str, domains: &[String]) -> Result<Vec<u8>> {
+    Ok(render_hosts_block(original, installation, domains, false)?.0)
+}
+
+fn laragon_domain(line: &str) -> Option<&str> {
+    let (entry, comment) = line.split_once('#')?;
+    if !comment.trim().eq_ignore_ascii_case("laragon magic!") {
+        return None;
+    }
+    let mut fields = entry.split_whitespace();
+    if fields.next()? != "127.0.0.1" {
+        return None;
+    }
+    let domain = fields.next()?;
+    fields.next().is_none().then_some(domain)
+}
+
+fn suspended_laragon_prefix(installation: &str) -> String {
+    format!("# dockon {installation} suspended laragon: ")
+}
+
+fn render_hosts_block(
+    original: &[u8],
+    installation: &str,
+    domains: &[String],
+    skip_conflicts: bool,
+) -> Result<(Vec<u8>, Vec<String>)> {
     uuid::Uuid::parse_str(installation)?;
-    if original.len() > 1024 * 1024 || domains.len() > 100 {
+    if original.len() > 1024 * 1024 || domains.len() > 300 {
         bail!("Hosts data exceeds limits");
     }
     let text = std::str::from_utf8(original)
         .context("Hosts file must be UTF-8; no conversion is performed")?;
     let begin = format!("# dockon {installation} begin");
     let end = format!("# dockon {installation} end");
+    let suspended = suspended_laragon_prefix(installation);
     let mut inside = false;
     let mut seen = false;
     let mut output = String::new();
@@ -99,19 +126,29 @@ pub fn render_hosts(original: &[u8], installation: &str, domains: &[String]) -> 
             continue;
         }
         if !inside {
-            output.push_str(line);
+            let restored = line
+                .strip_prefix(&suspended)
+                .filter(|entry| laragon_domain(entry).is_some())
+                .unwrap_or(line);
+            output.push_str(restored);
         }
     }
     if inside {
         bail!("Unclosed Dockon hosts block; repair it explicitly before proceeding");
     }
-    let mut requested = BTreeSet::new();
-    for domain in domains {
+    let mut requested = BTreeMap::new();
+    for entry in domains {
+        let (address, domain) = entry.split_once(' ').unwrap_or(("127.0.0.1", entry));
+        let ip: std::net::Ipv4Addr = address.parse().context("Invalid local hosts address")?;
+        if !ip.is_loopback() {
+            bail!("Dockon hosts entries must use IPv4 loopback addresses");
+        }
         validate_domain(domain)?;
-        if !requested.insert(domain) {
+        if requested.insert(domain, ip).is_some() {
             bail!("Duplicate hosts domain");
         }
     }
+    let mut skipped = std::collections::BTreeSet::new();
     for line in output.lines() {
         let mut fields = line
             .split('#')
@@ -122,17 +159,43 @@ pub fn render_hosts(original: &[u8], installation: &str, domains: &[String]) -> 
             continue;
         };
         for name in fields {
-            if requested
+            if let Some((domain, expected)) = requested
                 .iter()
-                .any(|domain| domain.eq_ignore_ascii_case(name))
-                && address != "127.0.0.1"
+                .find(|(domain, _)| domain.eq_ignore_ascii_case(name))
             {
-                bail!("Domain {name} already maps to {address}; existing hosts entries will not be overwritten");
+                if address.parse::<std::net::Ipv4Addr>().ok().as_ref() != Some(expected) {
+                    if cfg!(windows)
+                        && *expected == dockon_core::WINDOWS_WEBMAIL_IP
+                        && laragon_domain(line).is_some_and(|host| host == name)
+                    {
+                        continue;
+                    }
+                    if !skip_conflicts {
+                        bail!("Domain {name} already maps to {address}; existing hosts entries will not be overwritten");
+                    }
+                    skipped.insert((*domain).to_owned());
+                }
             }
         }
     }
-    if domains.is_empty() {
-        return Ok(output.into_bytes());
+    requested.retain(|domain, _| !skipped.contains(*domain));
+    let skipped = skipped.into_iter().collect();
+    if requested.is_empty() {
+        return Ok((output.into_bytes(), skipped));
+    }
+    if cfg!(windows) {
+        let mut preserved = String::with_capacity(output.len());
+        for line in output.split_inclusive('\n') {
+            if laragon_domain(line).is_some_and(|name| {
+                requested.iter().any(|(domain, ip)| {
+                    domain.eq_ignore_ascii_case(name) && *ip == dockon_core::WINDOWS_WEBMAIL_IP
+                })
+            }) {
+                preserved.push_str(&suspended);
+            }
+            preserved.push_str(line);
+        }
+        output = preserved;
     }
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     if !output.is_empty() && !output.ends_with('\n') {
@@ -140,12 +203,12 @@ pub fn render_hosts(original: &[u8], installation: &str, domains: &[String]) -> 
     }
     output.push_str(&begin);
     output.push_str(newline);
-    for domain in domains {
-        output.push_str(&format!("127.0.0.1 {domain}{newline}"));
+    for (domain, address) in requested {
+        output.push_str(&format!("{address} {domain}{newline}"));
     }
     output.push_str(&end);
     output.push_str(newline);
-    Ok(output.into_bytes())
+    Ok((output.into_bytes(), skipped))
 }
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let mut bytes = vec![];
@@ -157,15 +220,16 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn own_block(bytes: &[u8], installation: &str) -> String {
+fn hosts_preview(bytes: &[u8], installation: &str) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut inside = false;
     let mut block = String::new();
+    let suspended = suspended_laragon_prefix(installation);
     for line in text.lines() {
         if line == format!("# dockon {installation} begin") {
             inside = true;
         }
-        if inside {
+        if inside || line.starts_with(&suspended) {
             block.push_str(line);
             block.push('\n');
         }
@@ -189,13 +253,137 @@ fn certificate(path: &Path) -> Result<Vec<u8>> {
         .collect::<String>();
     Ok(base64::engine::general_purpose::STANDARD.decode(content)?)
 }
+fn select_project_domain(
+    settings: &dockon_core::RouterSettings,
+    project: &dockon_core::Project,
+    projects: &[dockon_core::Project],
+    windows_hosts: Option<(&[u8], &str)>,
+) -> Result<String> {
+    let id = &project.manifest.id;
+    let current = settings.routes.iter().find(|route| &route.project_id == id);
+    let slug = project
+        .manifest
+        .root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(id);
+    let fallback = id.replace('_', "-");
+    let suffix = &settings.domain_suffix;
+    let candidates = current
+        .into_iter()
+        .map(|route| route.domain.clone())
+        .chain([
+            format!("{}.{suffix}", slug.to_ascii_lowercase()),
+            format!("{fallback}.{suffix}"),
+        ])
+        .chain((1..=100).map(|index| {
+            let label = format!("-dockon-{index}");
+            let base = fallback
+                .get(..fallback.len().min(63 - label.len()))
+                .unwrap_or("project")
+                .trim_end_matches('-');
+            format!("{base}{label}.{suffix}")
+        }));
+    let route_domains = |domain: &str, mail: bool| {
+        let mut names = vec![domain.to_owned()];
+        if mail {
+            names.extend([format!("mail.{domain}"), format!("webmail.{domain}")]);
+        }
+        names
+    };
+    let occupied: std::collections::BTreeSet<_> = settings
+        .routes
+        .iter()
+        .filter(|route| &route.project_id != id)
+        .flat_map(|route| {
+            route_domains(
+                &route.domain,
+                projects
+                    .iter()
+                    .any(|entry| entry.manifest.id == route.project_id && entry.has_mailpit()),
+            )
+        })
+        .collect();
+    for candidate in candidates {
+        let names = route_domains(&candidate, project.has_mailpit());
+        if names
+            .iter()
+            .any(|name| validate_domain(name).is_err() || occupied.contains(name))
+            || (cfg!(windows) && candidate.ends_with(".localhost"))
+        {
+            continue;
+        }
+        if let Some((bytes, installation)) = windows_hosts {
+            let mut domains = vec![format!("{} {candidate}", dockon_core::WINDOWS_WEBMAIL_IP)];
+            if project.has_mailpit() {
+                domains.push(format!(
+                    "{} webmail.{candidate}",
+                    dockon_core::WINDOWS_WEBMAIL_IP
+                ));
+                domains.push(format!(
+                    "{} mail.{candidate}",
+                    dockon_core::project_smtp_ip(id)
+                ));
+            }
+            if !render_hosts_block(bytes, installation, &domains, true)?
+                .1
+                .is_empty()
+            {
+                continue;
+            }
+        }
+        return Ok(candidate);
+    }
+    bail!("No free local domain for project {id}")
+}
+
 impl Router {
+    pub fn project_domain(
+        &self,
+        settings: &dockon_core::RouterSettings,
+        project: &dockon_core::Project,
+        projects: &[dockon_core::Project],
+    ) -> Result<String> {
+        let windows_hosts = if cfg!(windows) {
+            Some((
+                read_bounded(&hosts_path()?, 1024 * 1024)?,
+                std::fs::read_to_string(self.root.join("installation.id"))?,
+            ))
+        } else {
+            None
+        };
+        select_project_domain(
+            settings,
+            project,
+            projects,
+            windows_hosts
+                .as_ref()
+                .map(|(bytes, installation)| (bytes.as_slice(), installation.as_str())),
+        )
+    }
+
+    pub fn hosts_pending(
+        &self,
+        settings: &dockon_core::RouterSettings,
+        projects: &[dockon_core::Project],
+    ) -> Result<bool> {
+        let bytes = read_bounded(&hosts_path()?, 1024 * 1024)?;
+        let installation = std::fs::read_to_string(self.root.join("installation.id"))?;
+        let domains = super::hosts_entries(settings, projects);
+        let (after, _) = render_hosts_block(&bytes, &installation, &domains, true)?;
+        Ok(hosts_preview(&bytes, &installation) != hosts_preview(&after, &installation))
+    }
+
     pub(super) fn certificate_trusted(&self) -> bool {
         certificate(&self.certificate())
             .and_then(|der| platform_trusted(&der))
             .unwrap_or(false)
     }
-    pub async fn permission_plan(&self, action: SystemAction) -> Result<PermissionPlan> {
+    pub async fn permission_plan(
+        &self,
+        action: SystemAction,
+        projects: &[dockon_core::Project],
+    ) -> Result<PermissionPlan> {
         let expires = now()? + 300;
         let token = uuid::Uuid::new_v4().to_string();
         let (plan, prepared) = match action {
@@ -205,27 +393,59 @@ impl Router {
                     .settings
                     .as_ref()
                     .context("Apply router settings before preparing hosts changes")?;
-                let domains = if action == SystemAction::HostsRemove {
+                let mut domains = if action == SystemAction::HostsRemove {
                     vec![]
                 } else {
-                    settings
-                        .routes
-                        .iter()
-                        .filter(|r| !r.domain.ends_with(".localhost"))
-                        .map(|r| r.domain.clone())
-                        .collect()
+                    super::hosts_entries(settings, projects)
                 };
                 let path = hosts_path()?;
                 let bytes = read_bounded(&path, 1024 * 1024)?;
                 let installation = std::fs::read_to_string(self.root.join("installation.id"))?;
-                let after = render_hosts(&bytes, &installation, &domains)?;
+                let (after, skipped) = render_hosts_block(&bytes, &installation, &domains, true)?;
+                domains.retain(|entry| {
+                    let domain = entry
+                        .split_once(' ')
+                        .map_or(entry.as_str(), |(_, name)| name);
+                    !skipped.iter().any(|name| name == domain)
+                });
+                let mut warning = "Requires operating-system administrator approval. Dockon updates its marked block and creates a hosts backup.".to_owned();
+                if String::from_utf8_lossy(&after)
+                    .contains(&suspended_laragon_prefix(&installation))
+                {
+                    warning.push_str(" Matching Laragon-generated loopback entries are suspended while Dockon manages those domains.");
+                }
+                if !skipped.is_empty() {
+                    warning.push_str(&format!(
+                        " Existing mappings preserved for: {}.",
+                        skipped.join(", ")
+                    ));
+                }
                 let change = HostsChange {
                     installation,
                     domains,
                     expected_hash: digest(&bytes),
                     expires,
                 };
-                (PermissionPlan{token:token.clone(),action,target:path.to_string_lossy().into(),before:own_block(&bytes,&change.installation),after:own_block(&after,&change.installation),fingerprint:None,warning:"Requires an operating-system administrator approval. Only this installation's marked block is replaced. A backup is created beside hosts. Existing conflicting mappings are rejected.".into(),supported:cfg!(windows)||cfg!(target_os="macos")||Path::new("/usr/bin/pkexec").is_file()},Prepared{action,hosts:Some(change),certificate:None,expires})
+                (
+                    PermissionPlan {
+                        token: token.clone(),
+                        action,
+                        target: path.to_string_lossy().into(),
+                        before: hosts_preview(&bytes, &change.installation),
+                        after: hosts_preview(&after, &change.installation),
+                        fingerprint: None,
+                        warning,
+                        supported: cfg!(windows)
+                            || cfg!(target_os = "macos")
+                            || Path::new("/usr/bin/pkexec").is_file(),
+                    },
+                    Prepared {
+                        action,
+                        hosts: Some(change),
+                        certificate: None,
+                        expires,
+                    },
+                )
             }
             SystemAction::TrustCa | SystemAction::UntrustCa => {
                 let der = certificate(&self.certificate())?;
@@ -585,6 +805,44 @@ fn platform_set_trust(_der: &[u8], _trust: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_and_keeps_an_available_project_domain_when_hosts_collide() {
+        let installation = "d9218895-043c-4419-91a6-a0c1ea499737";
+        let project: dockon_core::Project = serde_json::from_value(serde_json::json!({
+            "manifest": {
+                "schema_version": 1,
+                "id": "shop",
+                "name": "Shop",
+                "root": "www/shop",
+                "health": {"type": "http", "path": "/"},
+                "services": [{"id": "mailpit", "executable": "mailpit"}]
+            },
+            "state": "RUNNING",
+            "services": []
+        }))
+        .unwrap();
+        let mut settings: dockon_core::RouterSettings = serde_json::from_value(serde_json::json!({
+            "runtime_installation": "caddy",
+            "http_port": 8080,
+            "https_port": 8443,
+            "routes": [{"project_id": "shop", "domain": "shop.test", "https": true}]
+        }))
+        .unwrap();
+        let hosts = b"127.0.0.1 shop.test # manual\n127.0.0.1 mail.shop-dockon-1.test\n";
+        let choose = |settings: &dockon_core::RouterSettings, hosts: &[u8]| {
+            select_project_domain(
+                settings,
+                &project,
+                std::slice::from_ref(&project),
+                Some((hosts, installation)),
+            )
+            .unwrap()
+        };
+        assert_eq!(choose(&settings, hosts), "shop-dockon-2.test");
+        settings.routes[0].domain = "shop-dockon-2.test".into();
+        assert_eq!(choose(&settings, b""), "shop-dockon-2.test");
+    }
     #[test]
     #[cfg(windows)]
     fn native_certificate_operations_use_an_isolated_memory_store() {
@@ -651,6 +909,48 @@ mod tests {
             updated
         );
         assert!(render_hosts(original, id, &["shared.internal".into()]).is_err());
+        let (updated, skipped) = render_hosts_block(
+            original,
+            id,
+            &[
+                "127.77.0.1 shared.internal".into(),
+                "127.77.0.1 shop.test".into(),
+            ],
+            true,
+        )
+        .unwrap();
+        assert_eq!(skipped, ["shared.internal"]);
+        assert_eq!(
+            updated,
+            render_hosts(original, id, &["127.77.0.1 shop.test".into()]).unwrap()
+        );
         assert!(render_hosts(original, id, &["shop.test\nmalicious".into()]).is_err());
+        let mail = [
+            "127.149.7.3 mail.shop.test".into(),
+            "127.77.0.1 webmail.shop.test".into(),
+        ];
+        let mapped = render_hosts(original, id, &mail).unwrap();
+        assert!(String::from_utf8_lossy(&mapped).contains("127.149.7.3 mail.shop.test"));
+        assert_eq!(render_hosts(&mapped, id, &mail).unwrap(), mapped);
+        assert!(render_hosts(original, id, &["192.168.1.2 mail.shop.test".into()]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hosts_update_suspends_only_matching_laragon_records_and_restores_them() {
+        let id = "d9218895-043c-4419-91a6-a0c1ea499737";
+        let original = b"127.0.0.1 Test.test  # laragon magic!\r\n127.0.0.1 other.test #laragon magic!\r\n127.0.0.1 manual.test # custom\r\n";
+        let domains = [
+            "127.77.0.1 test.test".into(),
+            "127.77.0.1 test2.test".into(),
+        ];
+        let updated = render_hosts(original, id, &domains).unwrap();
+        let preview = hosts_preview(&updated, id);
+        assert!(preview.contains("suspended laragon: 127.0.0.1 Test.test"));
+        assert!(preview.contains("127.77.0.1 test.test\n127.77.0.1 test2.test"));
+        assert!(!preview.contains("other.test"));
+        assert_eq!(render_hosts(&updated, id, &domains).unwrap(), updated);
+        assert_eq!(render_hosts(&updated, id, &[]).unwrap(), original);
+        assert!(render_hosts(original, id, &["127.77.0.1 manual.test".into()]).is_err());
     }
 }

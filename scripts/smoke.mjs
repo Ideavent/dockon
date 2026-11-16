@@ -117,6 +117,19 @@ try {
   launch();
   await ready();
   assert.equal((await rpc("health", undefined, "invalid-token")).ok, false);
+  assert.equal((await rpc("capabilities")).data.container, false);
+  await assert.rejects(
+    register("legacy-container", {
+      executable: "",
+      provider: "container",
+      container: {
+        engine: "docker",
+        image: `docker.io/library/redis@sha256:${"a".repeat(64)}`,
+        internal_port: 6379,
+      },
+    }),
+    /local applications and services/,
+  );
   const duplicate = spawn(binary("dockon-daemon"), [], {
     env,
     windowsHide: true,

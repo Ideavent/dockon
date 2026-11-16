@@ -1,0 +1,45 @@
+name: Dockon macOS installer
+on:
+  push:
+    branches: ["codex/macos-installer*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            arch: x64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build and verify the macOS installer
+        shell: bash
+        run: |
+          bash scripts/build-macos-installer.sh
+          dmgs=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          bash scripts/test-macos-installer.sh "${dmgs[0]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockon-macos-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
