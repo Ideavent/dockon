@@ -8,7 +8,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -78,6 +78,18 @@ pub fn validate_domain(domain: &str) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn loopback_port_available(port: u16) -> bool {
+    let addresses = [
+        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    ];
+    addresses
+        .iter()
+        .all(|addr| TcpStream::connect_timeout(addr, Duration::from_millis(100)).is_err())
+        && TcpListener::bind(addresses[0]).is_ok()
+}
+
 impl Router {
     pub fn new(root: PathBuf, runtimes: Arc<RuntimeManager>) -> Result<Self> {
         std::fs::create_dir_all(root.join("router"))?;
@@ -126,8 +138,20 @@ impl Router {
         if settings.routes.is_empty() || settings.routes.len() > 100 {
             bail!("Configure between 1 and 100 routes");
         }
-        let mut domains = BTreeSet::new();
+        let mut domains: BTreeSet<String> = settings
+            .routes
+            .iter()
+            .map(|route| route.domain.clone())
+            .collect();
+        if domains.len() != settings.routes.len() {
+            bail!("Domains and projects must be unique in router settings");
+        }
         let mut ids = BTreeSet::new();
+        let bind = if TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok() {
+            "127.0.0.1 ::1"
+        } else {
+            "127.0.0.1"
+        };
         let storage = dunce::simplified(&self.directory().join("storage"))
             .to_string_lossy()
             .replace('\\', "/");
@@ -137,14 +161,16 @@ impl Router {
         let mut result=format!("{{\n admin off\n persist_config off\n auto_https disable_redirects\n skip_install_trust\n storage file_system {{\n  root \"{storage}\"\n }}\n}}\n");
         for route in &settings.routes {
             validate_domain(&route.domain)?;
-            if !domains.insert(&route.domain) || !ids.insert(&route.project_id) {
+            if !ids.insert(&route.project_id) {
                 bail!("Domains and projects must be unique in router settings");
             }
             let project = projects
                 .iter()
                 .find(|p| p.manifest.id == route.project_id)
                 .context("Route refers to an unregistered project")?;
-            if !matches!(project.manifest.health, HealthCheck::Http { .. }) {
+            if !matches!(project.manifest.health, HealthCheck::Http { .. })
+                && !project.has_mailpit()
+            {
                 bail!("Only HTTP projects can use web routing");
             }
             let (scheme, port) = if route.https {
@@ -152,23 +178,118 @@ impl Router {
             } else {
                 ("http", settings.http_port)
             };
-            result.push_str(&format!(
-                "{scheme}://{}:{port} {{\n bind 127.0.0.1\n header X-Dockon-Router {}\n",
-                route.domain, self.marker
-            ));
-            if route.https {
-                result.push_str(" tls internal\n");
+            let mut addresses = format!("{scheme}://{}:{port}", route.domain);
+            if let Some(alias) = settings.workspace_alias(route, project) {
+                addresses.push_str(&format!(", {scheme}://{alias}:{port}"));
             }
-            if matches!(project.state, State::Running | State::Degraded) {
+            let upstream = if matches!(project.manifest.health, HealthCheck::Http { .. })
+                && matches!(project.state, State::Running | State::Degraded)
+            {
                 let upstream = project.port.context("Running project has no bound port")?;
                 if [settings.http_port, settings.https_port].contains(&upstream) {
                     bail!("Router ports conflict with a project upstream");
                 }
-                result.push_str(&format!(" reverse_proxy 127.0.0.1:{upstream}\n"));
+                if project
+                    .manifest
+                    .template
+                    .as_deref()
+                    .is_some_and(|template| {
+                        template.starts_with("vite-") || template.starts_with("django")
+                    })
+                {
+                    format!(" reverse_proxy 127.0.0.1:{upstream} {{\n  header_up Host 127.0.0.1:{upstream}\n }}\n")
+                } else {
+                    format!(" reverse_proxy 127.0.0.1:{upstream}\n")
+                }
             } else {
-                result.push_str(" respond \"Project is stopped in Dockon\" 503\n");
+                " respond \"Project is stopped in Dockon\" 503\n".into()
+            };
+            let tls = if route.https { " tls internal\n" } else { "" };
+            let dedicated = cfg!(windows) && !route.domain.ends_with(".localhost");
+            let standard = if route.https { 443 } else { 80 };
+            let project_bind = if dedicated && port == standard {
+                format!("{bind} {}", dockon_core::WINDOWS_WEBMAIL_IP)
+            } else {
+                bind.to_owned()
+            };
+            result.push_str(&format!(
+                "{addresses} {{\n bind {project_bind}\n header X-Dockon-Router {}\n{tls}{upstream}}}\n",
+                self.marker
+            ));
+            if dedicated && port != standard {
+                result.push_str(&format!(
+                    "{scheme}://{}:{standard} {{\n bind {}\n header X-Dockon-Router {}\n{tls}{upstream}}}\n",
+                    route.domain, dockon_core::WINDOWS_WEBMAIL_IP, self.marker
+                ));
             }
-            result.push_str("}\n");
+            if project.has_mailpit() {
+                let smtp_domain = format!("mail.{}", route.domain);
+                let domain = format!("webmail.{}", route.domain);
+                for name in [&smtp_domain, &domain] {
+                    validate_domain(name)?;
+                    if !domains.insert(name.clone()) {
+                        bail!("Mail address {name} conflicts with another route");
+                    }
+                }
+                let upstream = if let Some(mail) = project
+                    .services
+                    .iter()
+                    .find(|service| service.id == "mailpit" && service.state == State::Running)
+                {
+                    if [settings.http_port, settings.https_port].contains(&mail.port) {
+                        bail!("Router ports conflict with the project mail server");
+                    }
+                    format!(
+                        " reverse_proxy 127.0.0.1:{} {{\n  header_up Host 127.0.0.1\n }}\n",
+                        mail.port
+                    )
+                } else {
+                    " respond \"Project mail is stopped in Dockon\" 503\n".into()
+                };
+                if cfg!(windows) && !smtp_domain.ends_with(".localhost") {
+                    let ip = dockon_core::project_smtp_ip(&route.project_id);
+                    let project_origin = route.domain.replace('.', "[.]");
+                    result.push_str(&format!(
+                        r#"http://{smtp_domain}:80 {{
+ bind {ip}
+ header X-Dockon-Router {marker}
+ @app_origin header_regexp Origin ^https?://{project_origin}$
+ header @app_origin Access-Control-Allow-Origin {{http.request.header.Origin}}
+ header @app_origin +Vary Origin
+ @preflight {{
+  method OPTIONS
+  header_regexp Origin ^https?://{project_origin}$
+ }}
+ header @preflight Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+ header @preflight Access-Control-Allow-Headers "Content-Type, Authorization"
+ respond @preflight 204
+{upstream}}}
+"#,
+                        marker = self.marker
+                    ));
+                }
+                let alias = settings.webmail_alias(route, project);
+                if cfg!(windows) && !domain.ends_with(".localhost") {
+                    result.push_str(&format!(
+                        "http://{domain}:80 {{\n bind {}\n header X-Dockon-Router {}\n{upstream}}}\n",
+                        dockon_core::WINDOWS_WEBMAIL_IP, self.marker
+                    ));
+                }
+                let mut addresses = Vec::new();
+                if !cfg!(windows) || domain.ends_with(".localhost") {
+                    addresses.push(format!("http://{domain}:{}", settings.http_port));
+                }
+                if validate_domain(&alias).is_ok() && domains.insert(alias.clone()) {
+                    addresses.push(format!("http://{alias}:{}", settings.http_port));
+                }
+                if !addresses.is_empty() {
+                    let addresses = addresses.join(", ");
+                    result.push_str(&format!(
+                        "{addresses} {{\n bind {bind}\n header X-Dockon-Router {}\n{upstream}}}\n",
+                        self.marker
+                    ));
+                }
+            }
         }
         Ok(result)
     }
@@ -275,12 +396,7 @@ impl Router {
             bail!("Too many outstanding router plans; close old previews and retry later");
         }
         let token = uuid::Uuid::new_v4().to_string();
-        let hosts_entries = settings
-            .routes
-            .iter()
-            .filter(|r| !r.domain.ends_with(".localhost"))
-            .map(|r| format!("127.0.0.1 {}", r.domain))
-            .collect();
+        let hosts_entries = hosts_entries(&settings, projects);
         let mut warnings=vec!["Applying this plan restarts the shared router briefly; project processes remain running.".into(),"This plan does not change hosts or any certificate trust store. Custom public domain names can override normal browsing when mapped locally.".into()];
         if settings.routes.iter().any(|r| r.https) {
             warnings.push("HTTPS uses Dockon's private local CA. Browser trust requires a separate explicit approval.".into());
@@ -303,7 +419,21 @@ impl Router {
         );
         Ok(result)
     }
-    async fn spawn(&self, manifest: &Manifest, settings: &RouterSettings) -> Result<Instance> {
+    async fn spawn(
+        &self,
+        manifest: &Manifest,
+        settings: &RouterSettings,
+        config: &str,
+    ) -> Result<Instance> {
+        for (scheme, port) in [
+            ("http://", settings.http_port),
+            ("https://", settings.https_port),
+        ] {
+            if config.lines().any(|line| line.starts_with(scheme)) && !loopback_port_available(port)
+            {
+                bail!("Local router port {port} is in use");
+            }
+        }
         let mut instance = Instance::spawn(manifest, 0, &self.directory(), &self.environment())?;
         if let Some(stdout) = instance.child.stdout.take() {
             capture(stdout, self.logs.clone());
@@ -381,7 +511,7 @@ impl Router {
         if let Some(mut instance) = state.instance.take() {
             instance.stop("dockon-router").await?;
         }
-        match self.spawn(&manifest, settings).await {
+        match self.spawn(&manifest, settings, config).await {
             Ok(instance) => {
                 state.instance = Some(instance);
                 state.manifest = Some(manifest);
@@ -394,7 +524,7 @@ impl Router {
                 if let (Some(previous), Some(previous_settings)) =
                     (&state.manifest, &state.settings)
                 {
-                    match self.spawn(previous, previous_settings).await {
+                    match self.spawn(previous, previous_settings, &state.config).await {
                         Ok(instance) => state.instance = Some(instance),
                         Err(rollback) => {
                             state.error=Some(format!("Router startup failed: {error:#}; rollback also failed: {rollback:#}"));
@@ -421,19 +551,40 @@ impl Router {
         self.replace(&mut state, &pending.settings, &pending.config)
             .await?;
         state.settings = Some(pending.settings.clone());
-        let saved = (|| -> Result<()> {
-            let temporary = self.directory().join("settings.tmp");
-            std::fs::write(&temporary, serde_json::to_vec_pretty(&pending.settings)?)?;
-            std::fs::rename(temporary, self.directory().join("settings.json"))?;
-            Ok(())
-        })();
-        if let Err(error) = saved {
+        if let Err(error) = self.persist_settings(&pending.settings) {
             state.error = Some(format!(
                 "Router is running with the new settings, but saving them failed: {error:#}"
             ));
             return Err(error);
         }
         Ok(())
+    }
+    fn persist_settings(&self, settings: &RouterSettings) -> Result<()> {
+        let temporary = self.directory().join("settings.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(settings)?)?;
+        std::fs::rename(temporary, self.directory().join("settings.json"))?;
+        Ok(())
+    }
+
+    pub async fn save_preferences(
+        &self,
+        settings: RouterSettings,
+        projects: &[Project],
+    ) -> Result<()> {
+        {
+            let mut state = self.inner.lock().await;
+            let same_routes = state
+                .settings
+                .as_ref()
+                .is_some_and(|previous| previous.domain_suffix == settings.domain_suffix);
+            if same_routes || settings.routes.is_empty() {
+                self.persist_settings(&settings)?;
+                state.settings = Some(settings);
+                return Ok(());
+            }
+        }
+        let plan = self.plan(settings, projects).await?;
+        self.apply(&plan.token, projects).await
     }
     pub async fn refresh(&self, projects: &[Project]) -> Result<()> {
         let mut state = self.inner.lock().await;
@@ -466,6 +617,38 @@ impl Router {
             Sha256::digest(std::fs::read(self.certificate())?)
         ))
     }
+}
+
+fn hosts_entries(settings: &RouterSettings, projects: &[Project]) -> Vec<String> {
+    let mut entries = Vec::new();
+    for route in settings
+        .routes
+        .iter()
+        .filter(|route| !route.domain.ends_with(".localhost"))
+    {
+        let web_ip = if cfg!(windows) {
+            dockon_core::WINDOWS_WEBMAIL_IP
+        } else {
+            Ipv4Addr::LOCALHOST
+        };
+        entries.push(format!("{web_ip} {}", route.domain));
+        if projects
+            .iter()
+            .any(|project| project.manifest.id == route.project_id && project.has_mailpit())
+        {
+            let webmail_ip = if cfg!(windows) {
+                dockon_core::WINDOWS_WEBMAIL_IP
+            } else {
+                Ipv4Addr::LOCALHOST
+            };
+            entries.push(format!("{webmail_ip} webmail.{}", route.domain));
+            if cfg!(windows) {
+                let smtp_ip = dockon_core::project_smtp_ip(&route.project_id);
+                entries.push(format!("{smtp_ip} mail.{}", route.domain));
+            }
+        }
+    }
+    entries
 }
 fn capture(stream: impl AsyncRead + Unpin + Send + 'static, logs: Arc<Mutex<VecDeque<String>>>) {
     tokio::spawn(async move {

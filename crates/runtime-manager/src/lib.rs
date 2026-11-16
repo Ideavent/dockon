@@ -2,6 +2,8 @@ mod archive;
 pub mod catalog;
 mod profiles;
 pub mod projects;
+mod sdk;
+pub mod templates;
 mod transport;
 use anyhow::{bail, Context, Result};
 use dockon_core::RuntimeInstallation;
@@ -139,6 +141,7 @@ impl RuntimeManager {
         let mut seen = std::collections::BTreeSet::new();
         for runtime in [
             "node", "php", "php-cgi", "dotnet", "go", "python", "rust", "caddy", "apache", "nginx",
+            "java", "flutter",
         ] {
             let name = match runtime {
                 "rust" => "cargo",
@@ -146,7 +149,10 @@ impl RuntimeManager {
                 other => other,
             };
             let filename = if cfg!(windows) {
-                format!("{name}.exe")
+                format!(
+                    "{name}.{}",
+                    if runtime == "flutter" { "bat" } else { "exe" }
+                )
             } else {
                 name.into()
             };
@@ -291,14 +297,15 @@ impl RuntimeManager {
         let downloads = self.root.join("packages/downloads");
         std::fs::create_dir_all(&downloads)?;
         let cached = downloads.join(format!("{}.archive", artifact.hash.to_ascii_lowercase()));
+        let download_limit = if runtime == "flutter" { 4 } else { 2 } * 1024 * 1024 * 1024_u64;
         if !cached.is_file() {
             let temporary = downloads.join(format!("{}.part", uuid::Uuid::new_v4()));
             let mut response = self.http.response(&artifact.url).await?;
             if response
                 .content_length()
-                .is_some_and(|size| size > 2 * 1024 * 1024 * 1024)
+                .is_some_and(|size| size > download_limit)
             {
-                bail!("Runtime archive exceeds 2 GiB download limit");
+                bail!("Runtime archive exceeds its download limit");
             }
             let mut file = tokio::fs::OpenOptions::new()
                 .write(true)
@@ -309,8 +316,8 @@ impl RuntimeManager {
             let mut reported = 0u64;
             while let Some(chunk) = response.chunk().await? {
                 count += chunk.len() as u64;
-                if count > 2 * 1024 * 1024 * 1024 {
-                    bail!("Runtime archive exceeds 2 GiB download limit");
+                if count > download_limit {
+                    bail!("Runtime archive exceeds its download limit");
                 }
                 file.write_all(&chunk).await?;
                 if count - reported >= 4 * 1024 * 1024 {
@@ -341,8 +348,21 @@ impl RuntimeManager {
         let format = artifact.format.clone();
         let prefix = artifact.prefix.clone();
         let destination = stage.clone();
+        let limit = if runtime == "flutter" {
+            8 * 1024 * 1024 * 1024_u64
+        } else {
+            archive::MAX_BYTES
+        };
+        let artifact_entry = artifact.executable.clone();
         tokio::task::spawn_blocking(move || {
-            archive::extract(&archive_path, &format, &prefix, &destination)
+            if format == "file" {
+                std::fs::create_dir(&destination)?;
+                let entry = archive::relative(Path::new(&artifact_entry), false)?;
+                std::fs::copy(archive_path, destination.join(entry))?;
+                Ok(())
+            } else {
+                archive::extract_with_limit(&archive_path, &format, &prefix, &destination, limit)
+            }
         })
         .await??;
         let executable = stage.join(archive::relative(Path::new(&artifact.executable), false)?);
@@ -358,10 +378,14 @@ impl RuntimeManager {
             .join("runtime-checks")
             .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&check)?;
-        let actual = inspect_version(runtime, &executable, &check).await?;
-        let expected = version.split('-').next().unwrap_or(version);
-        if actual != expected {
-            bail!("Runtime version mismatch: expected {expected}, observed {actual}");
+        // These publisher catalogs attest the entire archive, including the CLI or PHAR.
+        // Flutter bootstraps itself on first use and Composer runs through a project PHP CLI.
+        if !matches!(runtime, "flutter" | "composer" | "android-tools") {
+            let actual = inspect_version(runtime, &executable, &check).await?;
+            let expected = version.split(['-', '+']).next().unwrap_or(version);
+            if actual != expected {
+                bail!("Runtime version mismatch: expected {expected}, observed {actual}");
+            }
         }
         let target = self
             .root
@@ -450,6 +474,12 @@ fn runtime_id(runtime: &str) -> Result<()> {
             | "caddy"
             | "apache"
             | "nginx"
+            | "redis"
+            | "memcached"
+            | "composer"
+            | "flutter"
+            | "java"
+            | "android-tools"
     ) {
         bail!("Unsupported runtime id");
     }
@@ -539,7 +569,7 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
         if !child.wait().await?.success() {
             bail!("Runtime version check failed; verify its platform prerequisites");
         }
-        if runtime == "nginx" {
+        if matches!(runtime, "nginx" | "java") {
             bytes.push(b' ');
             bytes.extend(errors);
         }
@@ -548,6 +578,28 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
     .await
     .context("Runtime version check timed out")??;
     let text = String::from_utf8_lossy(&output);
+    if runtime == "java" {
+        let version = text
+            .split_whitespace()
+            .nth(1)
+            .context("Java version is missing")?
+            .trim_matches('"');
+        let mut parts = version
+            .split(['+', '-'])
+            .next()
+            .unwrap_or(version)
+            .split('.')
+            .collect::<Vec<_>>();
+        if parts
+            .iter()
+            .any(|part| part.is_empty() || !part.bytes().all(|ch| ch.is_ascii_digit()))
+        {
+            bail!("Unsupported JDK version format");
+        }
+        parts.truncate(3);
+        parts.resize(3, "0");
+        return Ok(semver::Version::parse(&parts.join("."))?.to_string());
+    }
     if runtime == "php-cgi" && !text.contains("cgi-fcgi") {
         bail!("Select the PHP CGI executable (php-cgi), not the PHP CLI");
     }
@@ -561,6 +613,16 @@ pub async fn inspect_version(runtime: &str, executable: &Path, directory: &Path)
             .split_whitespace()
             .find_map(|part| part.strip_prefix(product))
             .context("Executable did not identify itself as the selected web server")?;
+        return Ok(semver::Version::parse(version)?.to_string());
+    }
+    if runtime == "redis" {
+        let version = text
+            .strip_prefix("Redis server ")
+            .and_then(|text| {
+                text.split_whitespace()
+                    .find_map(|part| part.strip_prefix("v="))
+            })
+            .context("Executable did not identify itself as Redis")?;
         return Ok(semver::Version::parse(version)?.to_string());
     }
     let version = text

@@ -4,15 +4,24 @@ use std::{fs, io::ErrorKind, path::PathBuf};
 
 #[derive(Serialize)]
 pub struct Workspace {
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     exists: bool,
-    folders: Vec<ProjectFolder>,
+    pub(crate) folders: Vec<ProjectFolder>,
 }
 
 #[derive(Serialize)]
-struct ProjectFolder {
-    name: String,
-    path: PathBuf,
+pub(crate) struct ProjectFolder {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
+    pub(crate) static_site: bool,
+}
+
+fn static_site(directory: &std::path::Path) -> bool {
+    directory.join("public").canonicalize().is_ok_and(|root| {
+        root.parent() == Some(directory)
+            && root.file_name().is_some_and(|name| name == "public")
+            && root.join("index.html").is_file()
+    })
 }
 
 pub fn folders() -> Result<Workspace> {
@@ -76,8 +85,10 @@ fn scan(root: PathBuf) -> Result<Workspace> {
         {
             continue;
         }
+        let name = entry.file_name().to_string_lossy().into_owned();
         folders.push(ProjectFolder {
-            name: entry.file_name().to_string_lossy().into_owned(),
+            static_site: static_site(&resolved),
+            name,
             path: entry.path(),
         });
     }

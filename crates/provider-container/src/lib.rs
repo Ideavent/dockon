@@ -115,6 +115,18 @@ impl ContainerProvider {
             }
         }
     }
+    pub async fn prepare_image(&self, spec: &ContainerSpec) -> Result<()> {
+        spec.validate()?;
+        if self
+            .inspect(spec.engine, "image", &spec.image)
+            .await
+            .is_err()
+        {
+            execute(spec.engine, &["pull".into(), spec.image.clone()], 180).await?;
+        }
+        Ok(())
+    }
+
     pub async fn start(
         &self,
         project: &str,
@@ -134,13 +146,7 @@ impl ContainerProvider {
             .await?;
         // Pull by immutable digest. No tags, host mounts, engine socket, host
         // networking or arbitrary engine options are exposed to manifests.
-        if self
-            .inspect(spec.engine, "image", &spec.image)
-            .await
-            .is_err()
-        {
-            execute(spec.engine, &["pull".into(), spec.image.clone()], 180).await?;
-        }
+        self.prepare_image(spec).await?;
         let mut args = vec![
             "container".into(),
             "create".into(),

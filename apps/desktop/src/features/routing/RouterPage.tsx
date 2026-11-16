@@ -1,30 +1,25 @@
-import { useEffect, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../../components/ui/button";
 import { request } from "../../ipc/client";
 import { SystemPermissions } from "./SystemPermissions";
+
 type Route = { project_id: string; domain: string; https: boolean };
-type Settings = {
-  runtime_installation: string;
-  http_port: number;
-  https_port: number;
-  routes: Route[];
-};
-type Status = {
-  settings: Settings | null;
+export type RouterStatus = {
+  settings: {
+    http_port: number;
+    https_port: number;
+    domain_suffix: string;
+    default_https: boolean;
+    routes: Route[];
+  } | null;
   running: boolean;
-  pid: number | null;
   error: string | null;
+  hosts_pending: boolean;
   root_certificate: string | null;
-  logs: string[];
+  certificate_trusted: boolean;
 };
-type Plan = {
-  token: string;
-  before: string;
-  after: string;
-  warnings: string[];
-  hosts_entries: string[];
-};
+
 export function RouterPage({
   connected,
   lang,
@@ -32,381 +27,157 @@ export function RouterPage({
   connected: boolean;
   lang: "tr" | "en";
 }) {
-  const tr = lang === "tr",
-    cache = useQueryClient();
-  const status = useQuery({
+  const tr = lang === "tr";
+  const cache = useQueryClient();
+  const router = useQuery({
     queryKey: ["router"],
-    queryFn: () => request<Status>("router_status"),
+    queryFn: () => request<RouterStatus>("router_status"),
     enabled: connected,
     refetchInterval: 2000,
-    retry: false,
   });
   const projects = useQuery({
     queryKey: ["projects"],
     queryFn: () =>
       request<
         {
-          manifest: { id: string; name: string; health?: { type: string } };
-          state: string;
+          manifest: {
+            id: string;
+            name: string;
+            health?: { type: string };
+            services?: { id: string }[];
+          };
         }[]
       >("list"),
     enabled: connected,
   });
-  const installed = useQuery({
-    queryKey: ["runtimes"],
-    queryFn: () =>
-      request<{ id: string; runtime: string; version: string }[]>(
-        "runtime_installed",
-      ),
-    enabled: connected,
-  });
-  const [settings, setSettings] = useState<Settings>({
-    runtime_installation: "",
-    http_port: navigator.userAgent.includes("Windows") ? 80 : 8080,
-    https_port: navigator.userAgent.includes("Windows") ? 443 : 8443,
-    routes: [],
-  });
-  const [loaded, setLoaded] = useState(false),
-    [plan, setPlan] = useState<Plan | null>(null);
-  useEffect(() => {
-    if (status.data && !loaded) {
-      if (status.data.settings) setSettings(status.data.settings);
-      setLoaded(true);
-    }
-  }, [status.data, loaded]);
-  const preview = useMutation({
-    mutationFn: () => request<Plan>("router_plan", { settings }),
-    onSuccess: setPlan,
-  });
-  const apply = useMutation({
-    mutationFn: () => request("router_apply", { token: plan?.token }),
-    onSuccess: () => {
-      setPlan(null);
-      cache.invalidateQueries({ queryKey: ["router"] });
+  const [draft, setDraft] = useState<{ suffix: string; https: boolean } | null>(
+    null,
+  );
+  const settings = router.data?.settings;
+  const saved = {
+    suffix: settings?.domain_suffix ?? "test",
+    https: settings?.default_https ?? false,
+  };
+  const values = draft ?? saved;
+  const changed =
+    values.suffix.trim().replace(/^\.+/, "").toLowerCase() !== saved.suffix ||
+    values.https !== saved.https;
+  const save = useMutation({
+    mutationFn: () =>
+      request("router_preferences", {
+        domain_suffix: values.suffix,
+        default_https: values.https,
+      }),
+    onSuccess: async () => {
+      await cache.invalidateQueries({ queryKey: ["router"] });
+      setDraft(null);
     },
   });
-  const stop = useMutation({
-    mutationFn: () => request("router_stop"),
-    onSuccess: () => cache.invalidateQueries({ queryKey: ["router"] }),
-  });
-  const change = (value: Settings) => {
-    setSettings(value);
-    setPlan(null);
-    preview.reset();
-    apply.reset();
-  };
-  const busy = preview.isPending || apply.isPending || stop.isPending;
-  const candidates = (projects.data || []).filter(
-    (p) => !p.manifest.health || p.manifest.health.type === "http",
-  );
   return (
     <>
       <section className="page-heading">
-        <div>
-          <div className="eyebrow">LOCAL WEB ROUTER</div>
-          <h1>{tr ? "Yerel adresler" : "Local domains"}</h1>
-          <p>
-            {tr
-              ? "Projelerine özel alan adı ve yerel HTTPS."
-              : "Custom project domains and local HTTPS."}
-          </p>
-        </div>
-        <span
-          className={
-            "status status-" + (status.data?.running ? "running" : "stopped")
-          }
-        >
-          {status.data?.running
-            ? tr
-              ? "Yönlendirici çalışıyor"
-              : "Router running"
-            : status.isSuccess
-              ? tr
-                ? "Yönlendirici durduruldu"
-                : "Router stopped"
-              : "—"}
-        </span>
+        <h1>{tr ? "Yerel adresler" : "Local domains"}</h1>
       </section>
-      {!connected && (
-        <div className="notice">
-          {tr
-            ? "Önce masaüstü daemon bağlantısını kur."
-            : "Connect to the desktop daemon first."}
-        </div>
-      )}
-      {[
-        status.error,
-        projects.error,
-        installed.error,
-        preview.error,
-        apply.error,
-        stop.error,
-      ]
-        .filter(Boolean)
-        .map((e, i) => (
-          <div className="error" role="alert" key={i}>
-            {String(e)}
-          </div>
-        ))}
-      {status.data?.error && (
-        <div className="error" role="alert">
-          {status.data.error}
-        </div>
-      )}
       <form
         className="router-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          preview.mutate();
+        onSubmit={(event) => {
+          event.preventDefault();
+          save.mutate();
         }}
       >
-        <div className="router-fields">
-          <label>
-            {tr ? "Caddy sürümü" : "Caddy version"}
-            <select
-              value={settings.runtime_installation}
-              required
-              disabled={busy}
-              onChange={(e) =>
-                change({ ...settings, runtime_installation: e.target.value })
-              }
-            >
-              <option value="">
-                {tr ? "Kurulu sürüm seç" : "Select an installed version"}
-              </option>
-              {installed.data
-                ?.filter((r) => r.runtime === "caddy")
-                .map((r) => (
-                  <option key={r.id} value={r.id}>
-                    Caddy {r.version}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label>
-            HTTP {tr ? "portu" : "port"}
-            <input
-              type="number"
-              min={80}
-              max={65535}
-              value={settings.http_port}
-              disabled={busy}
-              onChange={(e) =>
-                change({ ...settings, http_port: Number(e.target.value) })
-              }
-              required
-            />
-          </label>
-          <label>
-            HTTPS {tr ? "portu" : "port"}
-            <input
-              type="number"
-              min={443}
-              max={65535}
-              value={settings.https_port}
-              disabled={busy}
-              onChange={(e) =>
-                change({ ...settings, https_port: Number(e.target.value) })
-              }
-              required
-            />
-          </label>
-        </div>
-        <p className="muted">
+        <label>
+          {tr ? "Alan adı uzantısı" : "Domain suffix"}
+          <input
+            required
+            spellCheck={false}
+            disabled={!connected || router.isPending || save.isPending}
+            value={
+              values.suffix.startsWith(".")
+                ? values.suffix
+                : "." + values.suffix
+            }
+            onChange={(event) =>
+              setDraft({
+                ...values,
+                suffix: event.target.value.replace(/^\.+/, ""),
+              })
+            }
+          />
+        </label>
+        <label className="project-ssl">
+          <input
+            type="checkbox"
+            checked={values.https}
+            disabled={!connected || router.isPending || save.isPending}
+            onChange={(event) =>
+              setDraft({ ...values, https: event.target.checked })
+            }
+          />
           {tr
-            ? "Varsayılan uzantı .test. Tam alan adını her proje için değiştirebilirsin. 1024 ve üzeri portlar yönetici izni gerektirmez."
-            : "The default suffix is .test. Edit the full domain for each project. Ports 1024 and above do not require administrator privileges."}
+            ? "Yeni projelerde varsayılan SSL"
+            : "Default SSL for new projects"}
+        </label>
+        <Button
+          type="submit"
+          disabled={!connected || !changed || save.isPending}
+        >
+          {tr ? "Kaydet" : "Save"}
+        </Button>
+      </form>
+      {(save.error || router.error || router.data?.error) && (
+        <p role="alert">
+          {save.error?.message || router.error?.message || router.data?.error}
         </p>
-        <div className="route-list">
-          {candidates.map((project) => {
-            const route = settings.routes.find(
-              (r) => r.project_id === project.manifest.id,
+      )}
+      <section className="router-plan">
+        <h2>{tr ? "Mevcut adresler" : "Current addresses"}</h2>
+        {settings?.routes.length ? (
+          settings.routes.map((route) => {
+            const project = projects.data?.find(
+              ({ manifest }) => manifest.id === route.project_id,
             );
+            const hasMail = project?.manifest.services?.some(
+              ({ id }) => id === "mailpit",
+            );
+            const windows = navigator.userAgent.includes("Windows");
+            const standard = windows && !route.domain.endsWith(".localhost");
+            const scheme = route.https ? "https" : "http";
+            const defaultPort = route.https ? 443 : 80;
+            const port = route.https ? settings.https_port : settings.http_port;
+            const suffix = standard || port === defaultPort ? "" : ":" + port;
+            const mailSuffix =
+              standard || settings.http_port === 80
+                ? ""
+                : ":" + settings.http_port;
             return (
-              <div className="route-row" key={project.manifest.id}>
-                <label className="route-toggle">
-                  <input
-                    type="checkbox"
-                    checked={!!route}
-                    disabled={busy}
-                    onChange={(e) =>
-                      change({
-                        ...settings,
-                        routes: e.target.checked
-                          ? [
-                              ...settings.routes,
-                              {
-                                project_id: project.manifest.id,
-                                domain:
-                                  project.manifest.id
-                                    .toLowerCase()
-                                    .replace(/_/g, "-") + ".test",
-                                https: false,
-                              },
-                            ]
-                          : settings.routes.filter(
-                              (r) => r.project_id !== project.manifest.id,
-                            ),
-                      })
-                    }
-                  />
-                  <span>
-                    {project.manifest.name}
-                    <small>{project.state}</small>
-                  </span>
-                </label>
-                {route && (
-                  <>
-                    <input
-                      aria-label={
-                        (tr ? "Alan adı: " : "Domain: ") + project.manifest.name
-                      }
-                      value={route.domain}
-                      disabled={busy}
-                      onChange={(e) =>
-                        change({
-                          ...settings,
-                          routes: settings.routes.map((r) =>
-                            r.project_id === route.project_id
-                              ? { ...r, domain: e.target.value }
-                              : r,
-                          ),
-                        })
-                      }
-                      required
-                    />
-                    <label className="route-toggle">
-                      <input
-                        type="checkbox"
-                        checked={route.https}
-                        disabled={busy}
-                        onChange={(e) =>
-                          change({
-                            ...settings,
-                            routes: settings.routes.map((r) =>
-                              r.project_id === route.project_id
-                                ? { ...r, https: e.target.checked }
-                                : r,
-                            ),
-                          })
-                        }
-                      />
-                      HTTPS
-                    </label>
-                  </>
+              <div className="project-location" key={route.project_id}>
+                <strong>{project?.manifest.name ?? route.project_id}</strong>
+                {project?.manifest.health?.type !== "tcp" && (
+                  <code>
+                    {scheme}://{route.domain}
+                    {suffix}/
+                  </code>
+                )}
+                {hasMail && (
+                  <code>
+                    http://webmail.{route.domain}
+                    {mailSuffix}/
+                  </code>
+                )}
+                {hasMail && standard && (
+                  <code>http://mail.{route.domain}/api/v1/</code>
                 )}
               </div>
             );
-          })}
-        </div>
-        {!candidates.length && (
-          <p className="muted">
-            {tr ? "Önce bir HTTP projesi ekle." : "Add an HTTP project first."}
-          </p>
+          })
+        ) : (
+          <p>{tr ? "Henüz yerel adres yok." : "No local domains yet."}</p>
         )}
-        <div className="heading-actions">
-          <Button
-            variant="primary"
-            disabled={!connected || busy || !settings.routes.length}
-          >
-            {preview.isPending
-              ? tr
-                ? "Doğrulanıyor…"
-                : "Validating…"
-              : tr
-                ? "Değişikliği önizle"
-                : "Preview change"}
-          </Button>
-          {status.data?.running && (
-            <Button type="button" disabled={busy} onClick={() => stop.mutate()}>
-              {tr ? "Yönlendiriciyi durdur" : "Stop router"}
-            </Button>
-          )}
-        </div>
-      </form>
-      {plan && (
-        <section className="router-plan">
-          <h2>{tr ? "Onay öncesi önizleme" : "Review before approval"}</h2>
-          <div className="notice">
-            <p>
-              {tr
-                ? "Uygulama ortak yönlendiriciyi kısa süreyle yeniden başlatır. Proje süreçleri çalışmaya devam eder. Proje durumu değişirse yeni önizleme gerekir."
-                : "Applying briefly restarts the shared router. Project processes keep running. A project state change requires a new preview."}
-            </p>
-            <p>
-              {tr
-                ? "Bu adım hosts dosyasını veya sertifika güven deposunu değiştirmez. HTTPS için ayrıca yerel CA güveni gerekir."
-                : "This step does not change hosts or certificate trust. HTTPS requires separate local CA trust."}
-            </p>
-          </div>
-          <div className="config-preview">
-            <div>
-              <h3>{tr ? "Önce" : "Before"}</h3>
-              <pre>
-                {plan.before ||
-                  (tr ? "Etkin yapılandırma yok" : "No active configuration")}
-              </pre>
-            </div>
-            <div>
-              <h3>{tr ? "Sonra" : "After"}</h3>
-              <pre>{plan.after}</pre>
-            </div>
-          </div>
-          {!!plan.hosts_entries.length && (
-            <>
-              <h3>
-                {tr
-                  ? "Gerekli yerel adres kayıtları"
-                  : "Required local address entries"}
-              </h3>
-              <pre>{plan.hosts_entries.join("\n")}</pre>
-              <p className="muted">
-                {tr
-                  ? "Özel alan adı kullanmak normal DNS yönlendirmesini yerelde değiştirebilir. Sistem izin adımı ayrı uygulanır."
-                  : "Custom domains can override normal DNS locally. The system permission step is applied separately."}
-              </p>
-            </>
-          )}
-          <Button
-            variant="primary"
-            disabled={busy}
-            onClick={() => apply.mutate()}
-          >
-            {apply.isPending
-              ? tr
-                ? "Uygulanıyor…"
-                : "Applying…"
-              : tr
-                ? "Yönlendirici değişikliğini uygula"
-                : "Apply router change"}
-          </Button>
-        </section>
-      )}
-      {status.data?.root_certificate && (
-        <div className="notice">
-          <strong>
-            {tr ? "Yerel CA sertifikası" : "Local CA certificate"}
-          </strong>
-          <p>{status.data.root_certificate}</p>
-          <p>
-            {tr
-              ? "Sertifika oluşturulması tarayıcının güveneceği anlamına gelmez."
-              : "Creating a certificate does not establish browser trust."}
-          </p>
-        </div>
-      )}
-      {connected && status.data?.settings && (
         <SystemPermissions
           lang={lang}
-          hasCertificate={!!status.data.root_certificate}
+          hostsPending={router.data?.hosts_pending ?? false}
         />
-      )}
-      {!!status.data?.logs.length && (
-        <details className="router-logs">
-          <summary>{tr ? "Yönlendirici günlükleri" : "Router logs"}</summary>
-          <pre>{status.data.logs.join("\n")}</pre>
-        </details>
-      )}
+      </section>
     </>
   );
 }

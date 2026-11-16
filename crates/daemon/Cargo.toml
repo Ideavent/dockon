@@ -14,7 +14,6 @@ dockon-ipc.workspace = true
 dockon-persistence.workspace = true
 dockon-orchestrator.workspace = true
 dockon-provider-native.workspace = true
-dockon-provider-container.workspace = true
 dockon-runtime-manager.workspace = true
 dockon-router.workspace = true
 fs2 = "0.4"

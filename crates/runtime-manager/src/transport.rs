@@ -22,11 +22,19 @@ pub fn allowed(url: &Url) -> bool {
                     | "dl.google.com"
                     | "api.github.com"
                     | "github.com"
+                    | "codeload.github.com"
                     | "release-assets.githubusercontent.com"
                     | "objects.githubusercontent.com"
                     | "raw.githubusercontent.com"
                     | "www.apachelounge.com"
                     | "nginx.org"
+                    | "getcomposer.org"
+                    | "api.adoptium.net"
+                    | "storage.googleapis.com"
+                    | "repo.packagist.org"
+                    | "pypi.org"
+                    | "start.spring.io"
+                    | "developer.android.com"
             )
         )
 }
@@ -76,7 +84,16 @@ impl Transport {
         }
         let response = self
             .0
-            .get(parsed)
+            .get(parsed.clone())
+            .timeout(
+                if parsed.host_str() == Some("storage.googleapis.com")
+                    && parsed.path().ends_with(".zip")
+                {
+                    Duration::from_secs(3600)
+                } else {
+                    Duration::from_secs(180)
+                },
+            )
             .send()
             .await
             .context("Publisher request failed")?

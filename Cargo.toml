@@ -4,7 +4,7 @@ members = ["crates/core", "crates/ipc", "crates/persistence", "crates/provider-n
 default-members = ["crates/daemon", "examples/hello-http"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.12"
 edition = "2021"
 
 [workspace.dependencies]
@@ -17,7 +17,6 @@ dockon-core = { path = "crates/core" }
 dockon-ipc = { path = "crates/ipc" }
 dockon-persistence = { path = "crates/persistence" }
 dockon-provider-native = { path = "crates/provider-native" }
-dockon-provider-container = { path = "crates/provider-container" }
 dockon-runtime-manager = { path = "crates/runtime-manager" }
 dockon-router = { path = "crates/router" }
 dockon-orchestrator = { path = "crates/orchestrator" }
