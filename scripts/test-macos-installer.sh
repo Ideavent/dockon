@@ -25,7 +25,7 @@ bin="${app[0]}/Contents/MacOS"
 desktop=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "${app[0]}/Contents/Info.plist")
 for binary in "$desktop" dockon-daemon dockon-runner dockon-hosts-helper dockonctl; do
   test -x "$bin/$binary"
-  lipo -verify_arch "$(uname -m)" "$bin/$binary"
+  lipo "$bin/$binary" -verify_arch "$(uname -m)"
 done
 
 ctl="$bin/dockonctl"
