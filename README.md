@@ -52,6 +52,10 @@ The browser/native UI checks expect the Vite dev server to be running (`pnpm dev
 
 Windows installed application target: C:\dockon. No production installer is available in Sprint 01. macOS/Linux builds require their own host dependencies and will be verified through CI when a GitHub remote is supplied. User projects and backups must survive uninstallation.
 
+## İletişim
+
+Proje hakkında soruların için [alpay@ideavent.tr](mailto:alpay@ideavent.tr) adresine yazabilirsin.
+
 ## Lisans
 
 Dockon kaynak kodu [MIT Lisansı](LICENSE) kapsamında sunulur. Üçüncü taraf bileşenler kendi lisanslarına tabidir.
