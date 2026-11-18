@@ -1,0 +1,77 @@
+name: Dockon macOS installer
+on:
+  push:
+    branches: ["codex/macos-installer*"]
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: Sign with Developer ID and notarize for distribution
+        type: boolean
+        default: true
+permissions:
+  contents: read
+jobs:
+  package:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-26-intel
+            arch: x64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build the macOS installer
+        if: ${{ !inputs.signed }}
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: bash scripts/build-macos-installer.sh
+        timeout-minutes: 20
+      - name: Build and notarize the distribution installer
+        if: ${{ inputs.signed }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        timeout-minutes: 26
+        run: |
+          : "${APPLE_CERTIFICATE:?Set the Developer ID certificate secret}"
+          : "${APPLE_CERTIFICATE_PASSWORD:?Set the certificate password secret}"
+          : "${APPLE_SIGNING_IDENTITY:?Set the Developer ID signing identity secret}"
+          : "${APPLE_ID:?Set the notarization Apple Account secret}"
+          : "${APPLE_PASSWORD:?Set the app-specific password secret}"
+          : "${APPLE_TEAM_ID:?Set the Apple Developer team ID secret}"
+          bash scripts/build-macos-installer.sh
+      - name: Verify the mounted macOS installer
+        env:
+          DOCKON_REQUIRE_NOTARIZATION: ${{ inputs.signed && '1' || '0' }}
+        shell: bash
+        timeout-minutes: 4
+        run: |
+          dmgs=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          bash scripts/test-macos-installer.sh "${dmgs[0]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dockon-macos-${{ matrix.arch }}-${{ inputs.signed && 'notarized' || 'dev' }}
+          path: target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error

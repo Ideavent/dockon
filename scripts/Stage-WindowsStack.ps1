@@ -17,6 +17,10 @@ $packages = @(
     @{ Name = 'mysql'; File = 'mysql.zip'; Prefix = 'mysql-8.4.13-winx64'; Binary = 'bin/mysqld.exe'; Algorithm = 'SHA256'
        Url = 'https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13-winx64.zip'
        Hash = 'e9cd98b1d23f122987b1afca26ad942efec5891481103d48ae3cde237fa3ea54' },
+    @{ Name = 'postgres'; File = 'postgres-17.12.zip'; Prefix = 'pgsql'; Binary = 'bin/postgres.exe'; Algorithm = 'SHA256'
+       Url = 'https://get.enterprisedb.com/postgresql/postgresql-17.12-1-windows-x64-binaries.zip'
+       Hash = 'a2cd8a774389347b70be7748ac4a37ef43cb6ee539c5fc3e85ae264b15e4a04c'
+       Include = @('bin','lib','share','server_license.txt','commandlinetools_3rd_party_licenses.txt') },
     @{ Name = 'mailpit'; File = 'mailpit.zip'; Prefix = ''; Binary = 'mailpit.exe'; Algorithm = 'SHA256'
        Url = 'https://github.com/axllent/mailpit/releases/download/v1.33.1/mailpit-windows-amd64.zip'
        Hash = '0bcf8f1e7c21005b30c206064ff2f37dac602ef66774e558379d326f5673d652' }
@@ -51,7 +55,9 @@ foreach ($package in $packages) {
             Remove-Item -LiteralPath $resolved.FullName -Recurse -Force
         }
         New-Item -ItemType Directory -Path $destination | Out-Null
-        Get-ChildItem -LiteralPath $source -Force | Move-Item -Destination $destination
+        Get-ChildItem -LiteralPath $source -Force |
+            Where-Object { !$package.Include -or $_.Name -in $package.Include } |
+            Move-Item -Destination $destination
     } finally {
         Remove-Item -LiteralPath $extract.FullName -Recurse -Force
     }

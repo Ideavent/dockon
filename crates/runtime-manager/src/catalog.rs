@@ -9,6 +9,18 @@ const APACHE_URL: &str =
     "https://www.apachelounge.com/download/VS18/binaries/httpd-2.4.71-261112-Win64-VS18.zip";
 const APACHE_SHA512: &str = "CA0EB9067369D4E4A596A5ED7E31D53BEE70F2524B1A671AA70CC0E8E07C838726B4CD6B22249FF3180171B7B8DD011DCF44DFA38CE5005373878635EF8894F9";
 const NGINX_VERSION: &str = "1.31.8";
+const MEMCACHED_COMMIT: &str = "e78f75a8f8606409a090a1a88a682a1f9be47c20";
+pub const REDIS_WINDOWS: &[(&str, &str)] = &[
+    (
+        "8.10.3",
+        "af16df340525b431e9ec8dabfd625d5e7a233f82805b5418819904ea909c447f",
+    ),
+    (
+        "8.8.3",
+        "c2ebc76c007a12c96d7dd64e252a194d9e6a06fe801dfb834ca071314fd662e7",
+    ),
+];
+pub const MEMCACHED_WINDOWS: &str = "1.6.45";
 const NGINX_URL: &str = "https://nginx.org/download/nginx-1.31.8.zip";
 // Release signature checked with the publisher's D6786CE303D9A9022998DC6CC8464D549AF75C0A key.
 const NGINX_SHA512: &str = "12FF367208206B270E6E0FFDC979B6625502B3537613A1F8F6B2AA61FF0CBBC81682CB16DE9C2329FD4D1062A60AEC6CEEACEE5C3BFBDD79D14C94EEBD017DBD";
@@ -43,7 +55,7 @@ pub struct Version {
 pub fn platform() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
-fn node_platform() -> Result<(&'static str, &'static str)> {
+pub(crate) fn node_platform() -> Result<(&'static str, &'static str)> {
     let os = match std::env::consts::OS {
         "windows" => "win",
         "macos" => "darwin",
@@ -100,6 +112,33 @@ fn version_key(value: &str) -> semver::Version {
     parse_version(value).unwrap_or_else(|| semver::Version::new(0, 0, 0))
 }
 pub async fn versions(http: &Transport, runtime: &str) -> Result<(Vec<Version>, Option<String>)> {
+    if matches!(
+        runtime,
+        "composer" | "flutter" | "java" | "python" | "android-tools"
+    ) {
+        return Ok((crate::sdk::versions(http, runtime).await?, None));
+    }
+    if matches!(runtime, "redis" | "memcached") {
+        let versions = if cfg!(all(windows, target_arch = "x86_64")) {
+            let tags: Vec<_> = if runtime == "redis" {
+                REDIS_WINDOWS.iter().map(|(tag, _)| *tag).collect()
+            } else {
+                vec![MEMCACHED_WINDOWS]
+            };
+            tags.into_iter()
+                .map(|version| Version {
+                    version: version.into(),
+                    support: "publisher_release".into(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        return Ok((
+            versions,
+            Some("Portable Windows x64 cache packages for local development.".into()),
+        ));
+    }
     if runtime == "apache" {
         let windows_x64 = cfg!(all(target_os = "windows", target_arch = "x86_64"));
         let versions = if windows_x64 {
@@ -141,7 +180,7 @@ pub async fn versions(http: &Transport, runtime: &str) -> Result<(Vec<Version>, 
                 let end=schedule[format!("v{}",version.major)]["end"].as_str().map(str::to_owned);
                 Some(Version{version:value.into(),support:if end.is_some_and(|date|date<today){"eol"}else if entry["lts"].is_string(){"lts"}else{"current"}.into()})}).collect()
         }
-        "php"=>{
+        "php" | "php-cgi"=>{
             if std::env::consts::OS!="windows"||std::env::consts::ARCH!="x86_64"{return Ok((vec![],Some("Managed PHP binaries currently cover Windows x64 NTS; use an explicitly selected system PHP or a container on this platform".into())));}
             let index:Value=http.json("https://windows.php.net/downloads/releases/releases.json").await?;
             index.as_object().context("Invalid PHP catalog")?.values().filter_map(|entry|Some(Version{version:entry["version"].as_str()?.into(),support:"publisher_release_support_unverified".into()})).collect()
@@ -167,6 +206,12 @@ pub async fn versions(http: &Transport, runtime: &str) -> Result<(Vec<Version>, 
     Ok((result, None))
 }
 pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<Artifact> {
+    if matches!(
+        runtime,
+        "composer" | "flutter" | "java" | "python" | "android-tools"
+    ) {
+        return crate::sdk::artifact(http, runtime, version).await;
+    }
     let (os, arch) = node_platform()?;
     let mut value = Artifact {
         runtime: runtime.into(),
@@ -181,6 +226,32 @@ pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<
         support: "publisher_release".into(),
     };
     match runtime {
+        "redis" | "memcached" => {
+            if (os, arch) != ("win", "x64") {
+                bail!("Managed Windows caches require Windows x64");
+            }
+            if runtime == "redis" {
+                let (_, hash) = REDIS_WINDOWS
+                    .iter()
+                    .find(|(tag, _)| *tag == version)
+                    .context("Unknown Redis for Windows version")?;
+                let name = format!("Redis-{version}-Windows-x64-msys2");
+                value.url = format!("https://github.com/redis-windows/redis-windows/releases/download/{version}/{name}.zip");
+                value.prefix = name;
+                value.hash = (*hash).into();
+                value.executable = "redis-server.exe".into();
+            } else {
+                if version != MEMCACHED_WINDOWS {
+                    bail!("Unknown Memcached for Windows version");
+                }
+                value.url =
+                    format!("https://codeload.github.com/nono303/memcached/zip/{MEMCACHED_COMMIT}");
+                value.prefix = format!("memcached-{MEMCACHED_COMMIT}");
+                value.hash =
+                    "380362e17c7454d91b9ebcdbfafa835fa5fda4d8ee2dfb5d4bb7e1293b7bfc59".into();
+                value.executable = "libevent-2.1/x64/memcached.exe".into();
+            }
+        }
         "node" => {
             let index: Vec<Value> = http.json("https://nodejs.org/dist/index.json").await?;
             let selected = index
@@ -216,7 +287,7 @@ pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<
             )?;
             value.executable = if os == "win" { "node.exe" } else { "bin/node" }.into();
         }
-        "php" => {
+        "php" | "php-cgi" => {
             if os != "win" || arch != "x64" {
                 bail!("Managed PHP is unavailable on this platform");
             }
@@ -245,7 +316,7 @@ pub async fn artifact(http: &Transport, runtime: &str, version: &str) -> Result<
                 .as_str()
                 .context("Missing PHP digest")?
                 .into();
-            value.executable = "php.exe".into();
+            value.executable = format!("{runtime}.exe");
         }
         "dotnet" => {
             let parsed = semver::Version::parse(version)?;

@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "icon": ["icons/icon.icns"],
+    "externalBin": [
+      "../../../.local/macos-installer/dockon-daemon",
+      "../../../.local/macos-installer/dockon-runner",
+      "../../../.local/macos-installer/dockon-hosts-helper",
+      "../../../.local/macos-installer/dockonctl"
+    ]
+  }
+}

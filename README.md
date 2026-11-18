@@ -1,6 +1,14 @@
-# dockon
+# Dockon
 
-Cross-platform local development environment manager. Working foundation under development; see [progress](docs/progress.md) and [limitations](docs/adr/0001-foundation.md).
+Dockon, [Ideavent](https://ideavent.tr/) tarafından geliştirilen ve ücretsiz sunulan bir yerel geliştirme ortamı yöneticisidir. Projelerini tek bir masaüstü uygulamasından başlatıp durdurabilir, her proje için çalışma zamanı seçebilir, yerel adresleri ve günlükleri yönetebilirsin.
+
+Dockon aktif olarak geliştiriliyor ve topluluk katkılarına açık. Hangi özelliklerin hazır olduğunu ve platformlara göre kapsamını [geliştirme durumu](docs/progress.md) ve [uyumluluk tablosundan](docs/compatibility-matrix.md) inceleyebilirsin.
+
+## Katkıda bulun
+
+- **Hata bildir.** GitHub’da bir [issue](https://github.com/Ideavent/dockon/issues) aç. Dockon sürümünü, işletim sistemini, hatayı tekrar oluşturma adımlarını ve beklediğin sonucu ekle.
+- **Özellik öner.** Çözmek istediğin sorunu ve özelliğin hangi iş akışında işe yarayacağını bir issue’da anlat.
+- **Kod veya dokümantasyon katkısı gönder.** Değişikliğini ayrı bir dalda yap, ilgili kontrolleri çalıştır ve bir [pull request](https://github.com/Ideavent/dockon/pulls) aç. Açıklamada neyi değiştirdiğini ve nasıl doğruladığını belirt.
 
 ## Windows development
 
@@ -23,9 +31,33 @@ Create/import a sample after building:
 .\scripts\New-SampleManifest.ps1
 ```
 
-Paste the returned absolute path into Import manifest. Alternatively, select an installed runtime on the Runtimes page and use New / import to create a project or detect an existing source folder. Projects start only when requested. Manifest imports do not execute code; explicit system runtime selection checks the selected executable's version. UI and daemon run as ordinary user. Closing the UI leaves the daemon and running projects intact. Run `target\debug\dockonctl shutdown` to stop the daemon and its workloads.
+Open **Menu → Import manifest** and paste the returned path. The **+** button creates a project or configures an existing source folder. Registered projects have their own start and stop controls.
 
-On Windows x64, select Apache on the Runtimes page to install the pinned Apache Lounge package or enter the absolute path of an existing `httpd.exe`. The project wizard supports Apache static sites with `public/index.html`. To try Apache with Docker, run `.\scripts\New-SampleManifest.ps1 -ApacheContainer` and import the generated manifest. This example serves the image's bundled page.
+Open **Settings** to download Apache, Nginx, PHP, PHP FastCGI, Node.js and other runtimes. When creating a PHP project, choose Apache, Nginx or the PHP development server and the installed version. The wizard also lets you attach a project database or continue without one. The PostgreSQL and MySQL presets run bundled Windows binaries with project-specific data directories and credentials. Open **Project settings → Versions** to change the assigned runtime later.
+
+The Redis Cache and Memcached tabs download verified portable Windows x64 builds for native Windows projects. Dockon starts them with the assigned project. The Windows cache presets run with the native project.
+
+Dockon prepares each project's local address when it starts. If the requested address is occupied, Dockon picks an available hostname under the configured suffix and saves it for that project. On Windows, approve the system prompt when Dockon needs to update hosts. If a Laragon-generated loopback record conflicts with a Dockon address, the hosts update comments out that record while Dockon manages the address. Enable project mail in the project wizard or project settings to use `mail.<name>.test` for SMTP on port 25, `http://mail.<name>.test/api/v1/` for the Mailpit HTTP API, and `http://webmail.<name>.test` for the inbox. Mailpit captures test messages locally.
+
+The **www** shortcut opens the workspace in the file manager. On Windows, a terminal shortcut opens the project folder with its selected native runtimes on the shell's PATH. The window's close button asks whether to hide Dockon in the background, stop services and quit, or cancel. **Settings → System** controls this behavior, launch at sign-in, and reduced motion.
+
+On Windows x64, select Apache on the Runtimes page to install the pinned Apache Lounge package or enter the absolute path of an existing `httpd.exe`. The project wizard supports Apache static sites with `public/index.html`.
+
+## Project toolchains and templates
+
+Install Composer, portable Python, Flutter SDK, Temurin Java JDK, and Android SDK command-line tools from **Versions and services**. Installed versions can coexist. Set the runtime and tools separately for each project. A PHP project with Composer selected gets a `composer` command in its Dockon PowerShell terminal. Flutter projects can use an installed JDK and either a managed Android SDK directory or an existing SDK directory.
+
+Choose a language in **New project** to see its templates. Dockon resolves the published stable template at creation time. PHP supports Laravel, CodeIgniter, CakePHP, and Symfony. Node.js supports React, Vue, and Svelte with Vite. Python supports Django and Flask. Java supports Spring Boot. Flutter creates Android and web targets and the Dockon **Start** action runs the web target. Flutter on Windows requires Git. Use `sdkmanager --list` and `sdkmanager --licenses` in the Flutter project's SDK terminal to install the Android platform packages and accept their licenses.
+
+## Project setup and maintenance
+
+Use **New project → Import from Git** to clone an HTTPS repository into the workspace. Dockon detects launch profiles, common lockfiles and runtime version hints. Explicitly opt into running repository scripts to install dependencies, or start the imported project after setup.
+
+Each project's **Tasks** page can install dependencies, run tests, start a Laravel queue worker or start a Vite server. Tasks are scoped to the project and stop with it. Flutter projects can start the web preview, run on connected Android devices and boot existing Android virtual devices. **Health checks** reports missing toolchains, PHP extensions and dependencies with links to the related project settings.
+
+In **Database**, take a MySQL or PostgreSQL snapshot and restore it as a new database in the same project or a different running project using the same database engine. The original databases are preserved. Snapshots currently support SQL dumps up to 8 MiB.
+
+In **Presets and sharing**, save a reusable project configuration or export a portable `dockon.json`. Use the preset selector in a new project's wizard, import a shared preset file, or apply a portable `dockon.json` detected in a repository. Presets carry runtime and SDK version labels, task shortcuts, mail, database and SSL configuration. Passwords, executable paths and machine-specific SDK directories are excluded.
 
 ## Checks
 
@@ -35,7 +67,6 @@ cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 node scripts/smoke.mjs
-node scripts/hybrid-smoke.mjs
 node scripts/project-smoke.mjs
 node scripts/runtime-smoke.mjs
 node scripts/router-smoke.mjs
@@ -47,16 +78,34 @@ The smoke test uses an isolated temporary data directory. It verifies real IPC/a
 
 The browser/native UI checks expect the Vite dev server to be running (`pnpm dev`). `desktop-smoke.mjs` is a Windows WebView2 test; its temporary debugging port is loopback-only and enabled exclusively on the isolated test process, never in normal app configuration.
 
-`hybrid-smoke.mjs` requires a running Docker Linux engine. It downloads only digest-pinned sample images as needed, creates uniquely labeled disposable test resources, verifies two-project Redis data isolation and recovery, then removes only those verified test resources. It does not touch existing Docker projects or images. Generic container launches are implemented; managed database catalogs and backup tooling are later sprints.
 
 `runtime-smoke.mjs` downloads the current official Node LTS into an isolated test data directory, verifies its digest/version, runs a project and checks offline catalog recovery. Set `DOCKON_EXTENDED_RUNTIMES=1` to also download and verify supported PHP/.NET/Go/Caddy artifacts and launch project profiles. These are network integration checks, not publisher signature verification.
 
 ## Windows x64 installer
 
-Increment the workspace, desktop package and Tauri versions for each installer release. Regenerate `Cargo.lock` after changing the workspace version. The setup filename, Windows installed-app version and Dockon footer show the release version.
+Increment the workspace, desktop package and Tauri versions for each installer release. Regenerate `Cargo.lock` after changing the workspace version. The setup filename and Windows installed-app entry show the release version.
 
-Run `./scripts/Build-WindowsInstaller.ps1` from PowerShell after installing the development dependencies. The setup executable and its SHA-256 file appear in `target/x86_64-pc-windows-msvc/release/bundle/nsis`. The installer uses administrator elevation to put application binaries in `C:\dockon`. Dockon runs under the signed-in user's account and stores project metadata, runtimes and backups in their user data directory. Close the desktop app and run `C:\dockon\dockonctl.exe shutdown` before updating or uninstalling. Uninstall preserves user data.
+Run `./scripts/Build-WindowsInstaller.ps1` from PowerShell after installing the development dependencies. The setup executable and its SHA-256 file appear in `target/x86_64-pc-windows-msvc/release/bundle/nsis`. The installer uses administrator elevation to put application binaries in `C:\dockon`. Dockon runs under the signed-in user's account and stores project metadata, runtimes and backups in their user data directory. Choose **Stop services and quit** in the tray before updating or uninstalling. Uninstall preserves user data.
 
-The current installer is an unsigned development build. Windows/macOS/Linux foundation, Node runtime, Node/Python/Rust project profiles and local routing checks passed in the configured GitHub repository.
+The Windows installer is an unsigned development build.
 
-The Local domains page defaults project names to `.test` and accepts edited full hostnames. Select a Caddy installation, projects and unprivileged ports, then preview and apply. The router does not start project processes. Hosts records and user CA trust have separate permission previews. Tests never apply changes to real system hosts or trust stores; live permission integration remains unverified. Windows trust targets the current user's ROOT store; macOS/Linux automatic trust is not yet supported.
+**Local domains** lists configured addresses. Change the shared suffix (initially `.test`) and the default SSL setting for new routes there. Existing projects keep their SSL choice when the default changes. Each project can toggle SSL under **Project settings → Mail and address**. Windows asks for administrator approval when local DNS records need to be registered. Trusting the Dockon CA for HTTPS is a separate action in project settings and targets the current Windows user’s ROOT store.
+
+## macOS installer
+
+On an Apple Silicon or Intel Mac, install the project dependencies and build a development DMG for that Mac:
+
+```sh
+pnpm install --frozen-lockfile
+APPLE_SIGNING_IDENTITY=- bash scripts/build-macos-installer.sh
+```
+
+The DMG is written to `target/<target>/release/bundle/dmg/`. The **Dockon macOS installer** GitHub Actions workflow can also build both architectures and supports notarization when the Apple signing credentials are configured.
+
+## İletişim
+
+Proje hakkında soruların için [alpay@ideavent.tr](mailto:alpay@ideavent.tr) adresine yazabilirsin.
+
+## Lisans
+
+Dockon kaynak kodu [MIT Lisansı](LICENSE) kapsamında sunulur. Üçüncü taraf bileşenler kendi lisanslarına tabidir.
