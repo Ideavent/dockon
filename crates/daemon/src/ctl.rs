@@ -6,6 +6,8 @@ async fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let command = match args.first().map(String::as_str) {
         Some("health") => Command::Health,
+        Some("hosts-preview") => Command::SystemPlan { action: dockon_core::SystemAction::HostsUpdate },
+        Some("hosts-apply") => Command::SystemApply { token: args.get(1).context("Hosts plan token required")?.clone() },
         Some("capabilities") => Command::Capabilities,
         Some("diagnostics") => Command::Diagnostics,
         Some("updates") => Command::RuntimeUpdates {
@@ -23,6 +25,11 @@ async fn main() -> Result<()> {
         Some("list") => Command::List,
         Some("register") => Command::Register {
             manifest_path: args.get(1).context("Manifest path required")?.into(),
+        },
+        Some("migrate-postgres") => Command::ProjectMigratePostgres {
+            id: args.get(1).context("Project id required")?.clone(),
+            dockon_dump: args.get(2).context("Dockon database archive required")?.into(),
+            postgres_dump: args.get(3).context("Postgres database archive required")?.into(),
         },
         Some("start") => Command::Start {
             id: args.get(1).context("Project id required")?.clone(),

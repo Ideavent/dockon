@@ -1,4 +1,4 @@
-//! Read-only detection and explicit source creation/import. No dependency installer is run.
+//! Detection, launch profiles, and minimal project creation.
 use crate::RuntimeManager;
 use anyhow::{bail, Context, Result};
 use dockon_core::{HealthCheck, LaunchArg, Manifest, RuntimeInstallation, ServiceSpec};
@@ -12,6 +12,9 @@ use std::{
 pub struct Detection {
     pub root: std::path::PathBuf,
     pub profiles: Vec<Profile>,
+    pub versions: std::collections::BTreeMap<String, String>,
+    pub dependency_files: Vec<String>,
+    pub preset: Option<dockon_core::ProjectPreset>,
 }
 #[derive(Debug, Serialize)]
 pub struct Profile {
@@ -46,6 +49,7 @@ pub fn detect(root: &Path) -> Result<Detection> {
         bail!("Project root is not a directory");
     }
     let mut profiles = vec![];
+    let mut versions = std::collections::BTreeMap::new();
     let mut add = |id: &str, runtime: &str, evidence: &str| {
         profiles.push(Profile {
             id: id.into(),
@@ -59,6 +63,65 @@ pub fn detect(root: &Path) -> Result<Detection> {
             add(&format!("node:{entry}"), "node", entry);
         }
     }
+    if let Ok(path) = child(&root, "package.json") {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&read(&path)?) {
+            if let Some(version) = value["engines"]["node"].as_str().filter(|v| v.len() <= 100) {
+                versions.insert("node".into(), version.into());
+            }
+            if value["devDependencies"]["vite"].is_string()
+                || value["dependencies"]["vite"].is_string()
+            {
+                add("node:vite", "node", "package.json");
+            }
+        }
+    }
+    if let Ok(path) = child(&root, ".nvmrc") {
+        let hint = read(&path)?;
+        if !hint.trim().is_empty() && hint.trim().len() < 80 {
+            versions.insert("node".into(), hint.trim().into());
+        }
+    }
+    if let Ok(path) = child(&root, "composer.json") {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&read(&path)?) {
+            if let Some(version) = value["require"]["php"].as_str().filter(|v| v.len() <= 100) {
+                versions.insert("php".into(), version.into());
+            }
+        }
+    }
+    if let Ok(path) = child(&root, "pyproject.toml") {
+        if let Some(hint) = read(&path)?
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once('=')?;
+                (key.trim() == "requires-python")
+                    .then(|| value.trim().trim_matches(['\'', '"']).to_owned())
+            })
+            .filter(|hint| !hint.is_empty() && hint.len() <= 100)
+        {
+            versions.insert("python".into(), hint);
+        }
+    }
+    if let Ok(path) = child(&root, "manage.py") {
+        if read(&path)?.contains("django") {
+            add("python:django", "python", "manage.py");
+        }
+    } else if let Ok(path) = child(&root, "app.py") {
+        if read(&path)?.contains("flask") {
+            add("python:flask", "python", "app.py");
+        }
+    }
+    if let Ok(path) = child(&root, "pubspec.yaml") {
+        if read(&path)?.contains("sdk: flutter") && child(&root, "web/index.html").is_ok() {
+            add("flutter:web", "flutter", "pubspec.yaml");
+        }
+    }
+    if let Ok(path) = child(&root, "pom.xml") {
+        if read(&path)?.contains("spring-boot")
+            && child(&root, if cfg!(windows) { "mvnw.cmd" } else { "mvnw" }).is_ok()
+        {
+            add("java:spring", "java", "pom.xml");
+        }
+    }
     if root.join("artisan").is_file() {
         child(&root, "artisan")?;
         add("php:laravel", "php", "artisan");
@@ -69,6 +132,13 @@ pub fn detect(root: &Path) -> Result<Detection> {
         if cfg!(windows) {
             add("apache:php", "apache", "public/index.php");
             add("nginx:php", "nginx", "public/index.php");
+        }
+    } else if root.join("webroot/index.php").is_file() {
+        child(&root, "webroot/index.php")?;
+        add("php:cakephp", "php", "webroot/index.php");
+        if cfg!(windows) {
+            add("apache:php", "apache", "webroot/index.php");
+            add("nginx:php", "nginx", "webroot/index.php");
         }
     } else if root.join("index.php").is_file() {
         child(&root, "index.php")?;
@@ -105,9 +175,53 @@ pub fn detect(root: &Path) -> Result<Detection> {
         }
         add("nginx:static", "nginx", "public/index.html");
     }
-    Ok(Detection { root, profiles })
+    let dependency_files = [
+        "composer.lock",
+        "composer.json",
+        "package-lock.json",
+        "package.json",
+        "requirements.txt",
+        "pyproject.toml",
+        "pubspec.lock",
+        "pubspec.yaml",
+    ]
+    .into_iter()
+    .filter(|name| child(&root, name).is_ok())
+    .map(str::to_owned)
+    .collect();
+    let preset = child(&root, "dockon.json")
+        .ok()
+        .and_then(|path| read(&path).ok())
+        .and_then(|source| serde_json::from_str::<dockon_core::ProjectPreset>(&source).ok())
+        .filter(|preset| preset.validate().is_ok());
+    Ok(Detection {
+        root,
+        profiles,
+        versions,
+        dependency_files,
+        preset,
+    })
 }
-fn validate_identity(id: &str, name: &str) -> Result<()> {
+pub(crate) fn php_extensions(root: &Path) -> Vec<&'static str> {
+    [
+        "curl",
+        "fileinfo",
+        "intl",
+        "mbstring",
+        "openssl",
+        "pdo_mysql",
+        "pdo_pgsql",
+        "pdo_sqlite",
+        "sqlite3",
+        "mysqli",
+        "zip",
+    ]
+    .into_iter()
+    .filter(|name| root.join("ext").join(format!("php_{name}.dll")).is_file())
+    .collect()
+}
+
+pub(crate) fn validate_identity(id: &str, name: &str) -> Result<()> {
     if id.is_empty()
         || id.len() > 64
         || !id
@@ -121,7 +235,7 @@ fn validate_identity(id: &str, name: &str) -> Result<()> {
     }
     Ok(())
 }
-fn manifest(
+pub(crate) fn manifest(
     id: &str,
     name: &str,
     root: &Path,
@@ -132,6 +246,12 @@ fn manifest(
     let mut args: Vec<LaunchArg> = vec![];
     match profile {
         "apache:static" | "nginx:static" | "apache:php" | "nginx:php" => {}
+        "node:vite" => args.extend(["node_modules/vite/bin/vite.js".into(), "--host".into(), "127.0.0.1".into(), "--strictPort".into(), LaunchArg::template("--port=${DOCKON_PORT}")]),
+        "python:django" => args.extend(["manage.py".into(), "runserver".into(), "--noreload".into(), LaunchArg::template("127.0.0.1:${DOCKON_PORT}")]),
+        "python:flask" => args.extend(["-m".into(), "flask".into(), "--app".into(), "app".into(), "run".into(), "--host=127.0.0.1".into(), LaunchArg::template("--port=${DOCKON_PORT}")]),
+        "flutter:web" => args.extend(["run".into(), "--release".into(), "-d".into(), "web-server".into(), "--web-hostname=127.0.0.1".into(), LaunchArg::template("--web-port=${DOCKON_PORT}")]),
+        "java:spring" => args.extend(["spring-boot:run".into(), LaunchArg::template("-Dspring-boot.run.arguments=--server.address=127.0.0.1 --server.port=${DOCKON_PORT}")]),
+        "java:basic" => args.push("Main.java".into()),
         p if p.starts_with("node:") => {
             child(root, &p[5..])?;
             args.push(p[5..].into());
@@ -144,15 +264,15 @@ fn manifest(
                 LaunchArg::template("--port=${DOCKON_PORT}"),
             ]);
         }
-        "php:root" | "php:public" => {
+        "php:root" | "php:public" | "php:cakephp" => {
             args.extend([
                 "-S".into(),
                 LaunchArg::template("127.0.0.1:${DOCKON_PORT}"),
                 "-t".into(),
-                if profile == "php:public" {
-                    "public".into()
-                } else {
-                    ".".into()
+                match profile {
+                    "php:public" => "public".into(),
+                    "php:cakephp" => "webroot".into(),
+                    _ => ".".into(),
                 },
             ]);
         }
@@ -175,7 +295,7 @@ fn manifest(
         _ => bail!("Unsupported launch profile"),
     }
     let manifest: Manifest = serde_json::from_value(
-        serde_json::json!({"schema_version":1,"id":id,"name":name,"root":root,"executable":installation.executable,"args":args,"runtime":{"installation_id":installation.id,"isolated_python":installation.runtime=="python"},"health":{"type":"http","path":"/"},"startup_timeout_seconds":120}),
+        serde_json::json!({"schema_version":1,"id":id,"name":name,"root":root,"executable":installation.executable,"args":args,"runtime":{"installation_id":installation.id,"isolated_python":installation.runtime=="python"},"health":{"type":"http","path":"/"},"startup_timeout_seconds":if matches!(installation.runtime.as_str(), "flutter" | "java" | "python") {300} else {120}}),
     )?;
     manifest.validate()?;
     Ok(manifest)
@@ -205,7 +325,15 @@ pub async fn import(
             bail!("global.json SDK differs from the selected runtime; select the pinned SDK or edit the project explicitly");
         }
     }
-    manifest(id, name, &detection.root, &installation, profile)
+    let mut result = manifest(id, name, &detection.root, &installation, profile)?;
+    result.template = match profile {
+        "java:spring" => Some("spring-boot".into()),
+        "node:vite" => Some("vite-import".into()),
+        "python:django" => Some("django-import".into()),
+        "flutter:web" => Some("flutter".into()),
+        _ => None,
+    };
+    Ok(result)
 }
 pub async fn attach_php_cgi(
     manager: &RuntimeManager,
@@ -234,7 +362,7 @@ pub async fn attach_php_cgi(
         ],
         "runtime": {"installation_id": cgi.id},
         "health": HealthCheck::Tcp,
-        "working_dir": "public"
+        "working_dir": if manifest.root.join("webroot/index.php").is_file() && !manifest.root.join("public").exists() { "webroot" } else { "public" }
     }))?;
     manifest.services.push(service);
     manifest.validate()
@@ -263,8 +391,10 @@ pub async fn create_with_php(
         bail!("New project path must be absolute and must not already exist");
     }
     let installation = manager.selected(installation_id).await?;
-    if php_cgi.is_some() && (installation.runtime != "apache" || !cfg!(windows)) {
-        bail!("Select Windows Apache to create a FastCGI project");
+    if php_cgi.is_some()
+        && !(installation.runtime == "nginx" || (installation.runtime == "apache" && cfg!(windows)))
+    {
+        bail!("Choose Apache or Nginx for PHP FastCGI");
     }
     if let Some(id) = php_cgi {
         if manager.selected(id).await?.runtime != "php-cgi" {
@@ -273,13 +403,17 @@ pub async fn create_with_php(
     }
     let mut files: Vec<(&str, String)> = vec![];
     let profile = match installation.runtime.as_str() {
-        "apache" if php_cgi.is_some() => {
+        "apache" | "nginx" if php_cgi.is_some() => {
             files.push((
                 "public/index.php",
                 "<?php header('Content-Type: text/plain'); echo 'dockon · PHP '.PHP_VERSION;\n"
                     .into(),
             ));
-            "apache:php"
+            if installation.runtime == "apache" {
+                "apache:php"
+            } else {
+                "nginx:php"
+            }
         }
         "nginx" | "apache" if installation.runtime == "nginx" || cfg!(windows) => {
             let server = if installation.runtime == "nginx" {
@@ -332,6 +466,10 @@ pub async fn create_with_php(
         "python" => {
             files.push(("index.html","<!doctype html><meta charset=\"utf-8\"><title>dockon</title><h1>dockon · Python</h1>\n".into()));
             "python:static"
+        }
+        "java" => {
+            files.push(("Main.java", "import com.sun.net.httpserver.HttpServer;\nimport java.net.InetSocketAddress;\npublic class Main { public static void main(String[] args) throws Exception { var s=HttpServer.create(new InetSocketAddress(\"127.0.0.1\", Integer.parseInt(System.getenv(\"PORT\"))),0); s.createContext(\"/\", e->{ byte[] body=\"Dockon - Java\".getBytes(); e.sendResponseHeaders(200,body.length); try (var out=e.getResponseBody()) { out.write(body); } }); s.start(); } }\n".into()));
+            "java:basic"
         }
         "rust" => {
             files.push((

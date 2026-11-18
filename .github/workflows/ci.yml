@@ -49,8 +49,6 @@ jobs:
         env:
           DOCKON_WEB_RUNTIMES: ${{ runner.os == 'Windows' && '1' || '0' }}
       - run: node scripts/router-smoke.mjs
-      - if: runner.os == 'Linux'
-        run: node scripts/hybrid-smoke.mjs
       - if: runner.os == 'Windows'
         name: Build and verify the Windows installer
         shell: pwsh

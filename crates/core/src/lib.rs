@@ -243,12 +243,104 @@ impl ServiceSpec {
             port: self.port,
             health: self.health.clone(),
             services: vec![],
+            tools: ProjectTools::default(),
+            tasks: vec![],
+            template: None,
             runtime: self.runtime.clone(),
             startup_timeout_seconds: self.startup_timeout_seconds,
         };
         manifest.validate()?;
         Ok(manifest)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectTask {
+    Dependencies,
+    LaravelQueue,
+    NodeDev,
+    Tests,
+    FlutterDevice,
+    FlutterEmulator,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortableRuntime {
+    pub runtime: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectPreset {
+    pub schema_version: u32,
+    pub name: String,
+    pub runtime: Option<PortableRuntime>,
+    pub php_cgi: Option<PortableRuntime>,
+    pub composer: Option<PortableRuntime>,
+    pub java: Option<PortableRuntime>,
+    pub android_tools: Option<PortableRuntime>,
+    pub database: Option<String>,
+    pub mail: bool,
+    pub https: bool,
+    #[serde(default)]
+    pub tasks: Vec<ProjectTask>,
+}
+
+impl ProjectPreset {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != 1
+            || self.name.trim().is_empty()
+            || self.name.len() > 160
+            || self.name.chars().any(char::is_control)
+            || self.tasks.len() > 4
+            || self.tasks.iter().any(|task| {
+                matches!(
+                    task,
+                    ProjectTask::FlutterDevice | ProjectTask::FlutterEmulator
+                )
+            })
+            || !matches!(self.database.as_deref(), None | Some("mysql" | "postgres"))
+        {
+            bail!("Invalid Dockon project preset");
+        }
+        for item in self
+            .runtime
+            .iter()
+            .chain(&self.php_cgi)
+            .chain(&self.composer)
+            .chain(&self.java)
+            .chain(&self.android_tools)
+        {
+            if item.runtime.is_empty()
+                || item.runtime.len() > 24
+                || !item
+                    .runtime
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'-')
+                || item.version.is_empty()
+                || item.version.len() > 64
+                || !item
+                    .version
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+            {
+                bail!("Invalid portable runtime version");
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectTools {
+    pub composer: Option<String>,
+    pub java: Option<String>,
+    pub android_sdk: Option<PathBuf>,
+    pub android_tools: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +368,12 @@ pub struct Manifest {
     pub health: HealthCheck,
     #[serde(default)]
     pub services: Vec<ServiceSpec>,
+    #[serde(default)]
+    pub tools: ProjectTools,
+    #[serde(default)]
+    pub tasks: Vec<ProjectTask>,
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 impl Manifest {
@@ -517,6 +615,10 @@ pub enum Command {
     RouterPlan {
         settings: RouterSettings,
     },
+    RouterPreferences {
+        domain_suffix: String,
+        default_https: bool,
+    },
     RouterApply {
         token: String,
     },
@@ -525,19 +627,120 @@ pub enum Command {
     Capabilities,
     Diagnostics,
     WorkspaceFolders,
+    SharedWebStatus,
+    SharedWebSet {
+        running: bool,
+    },
+    StackSet {
+        running: bool,
+    },
+    SharedWebReload,
+    SharedDatabaseStatus,
+    SharedDatabaseSet {
+        running: bool,
+    },
     ProjectPhpVersion {
         id: String,
         runtime_installation: String,
+    },
+    ProjectRuntimeVersion {
+        id: String,
+        runtime_installation: String,
+    },
+    WorkspaceGitClone {
+        slug: String,
+        url: String,
+    },
+    ProjectPresetCapture {
+        id: String,
+        name: String,
+    },
+    ProjectPresets,
+    ProjectPresetSave {
+        preset: ProjectPreset,
+    },
+    ProjectPresetRemove {
+        id: String,
+    },
+    ProjectCheck {
+        id: String,
+    },
+    ProjectTaskRun {
+        id: String,
+        task: ProjectTask,
+        device: Option<String>,
+    },
+    ProjectTaskStop {
+        id: String,
+        task: ProjectTask,
+    },
+    ProjectTasks {
+        id: String,
+    },
+    ProjectTasksSet {
+        id: String,
+        tasks: Vec<ProjectTask>,
+    },
+    FlutterEmulators {
+        id: String,
+    },
+    FlutterTargets {
+        id: String,
+    },
+    DatabaseSnapshot {
+        id: String,
+        engine: String,
+    },
+    DatabaseSnapshots {
+        id: String,
+        engine: String,
+    },
+    DatabaseSnapshotCopy {
+        id: String,
+        engine: String,
+        backup: String,
+        target: String,
+    },
+    ProjectToolsSet {
+        id: String,
+        tools: ProjectTools,
+    },
+    ProjectToolEnvironment {
+        id: String,
+    },
+    ProjectRuntimePaths {
+        id: String,
+    },
+    CacheCatalog {
+        service: String,
+        #[serde(default)]
+        container: bool,
+    },
+    ProjectCacheSet {
+        id: String,
+        service: String,
+        version: Option<String>,
     },
     WorkspaceCreate {
         slug: String,
         name: String,
         runtime_installation: String,
         php_cgi_installation: Option<String>,
+        #[serde(default)]
+        database: Option<String>,
+        #[serde(default)]
+        mail: bool,
+        #[serde(default)]
+        template: Option<String>,
+        #[serde(default)]
+        tools: ProjectTools,
     },
     WorkspaceRoute {
         id: String,
         https: bool,
+    },
+    WorkspaceEnsureRoute {
+        id: String,
     },
     LocalServices,
     LocalServicesSet {
@@ -581,6 +784,16 @@ pub enum Command {
         name: String,
         root: PathBuf,
         runtime_installation: String,
+        #[serde(default)]
+        php_cgi_installation: Option<String>,
+        #[serde(default)]
+        database: Option<String>,
+        #[serde(default)]
+        mail: bool,
+        #[serde(default)]
+        template: Option<String>,
+        #[serde(default)]
+        tools: ProjectTools,
     },
     ProjectImport {
         id: String,
@@ -590,6 +803,12 @@ pub enum Command {
         profile: String,
         #[serde(default)]
         php_cgi_installation: Option<String>,
+        #[serde(default)]
+        database: Option<String>,
+        #[serde(default)]
+        mail: bool,
+        #[serde(default)]
+        tools: ProjectTools,
     },
     ProjectSwitchStaticServer {
         id: String,
@@ -601,12 +820,21 @@ pub enum Command {
     ProjectAddMailpit {
         id: String,
     },
+    ProjectSetMail {
+        id: String,
+        enabled: bool,
+    },
     ProjectAddPostgres {
         id: String,
     },
     ProjectAddDatabase {
         id: String,
         engine: String,
+    },
+    ProjectMigratePostgres {
+        id: String,
+        dockon_dump: PathBuf,
+        postgres_dump: PathBuf,
     },
     PostgresConnection {
         id: String,
@@ -653,7 +881,15 @@ pub struct RouterSettings {
     pub runtime_installation: String,
     pub http_port: u16,
     pub https_port: u16,
+    #[serde(default = "default_domain_suffix")]
+    pub domain_suffix: String,
+    #[serde(default)]
+    pub default_https: bool,
     pub routes: Vec<ProjectRoute>,
+}
+
+pub fn default_domain_suffix() -> String {
+    "test".into()
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -669,6 +905,46 @@ pub struct ProjectRoute {
     pub project_id: String,
     pub domain: String,
     pub https: bool,
+}
+
+impl RouterSettings {
+    pub fn workspace_alias(&self, route: &ProjectRoute, project: &Project) -> Option<String> {
+        let slug = project
+            .manifest
+            .root
+            .file_name()?
+            .to_str()?
+            .to_ascii_lowercase();
+        if route.domain != format!("{slug}.{}", self.domain_suffix) {
+            return None;
+        }
+        let alias = format!("{slug}.localhost");
+        (!self.routes.iter().any(|entry| entry.domain == alias)).then_some(alias)
+    }
+
+    pub fn webmail_alias(&self, route: &ProjectRoute, project: &Project) -> String {
+        let host = self
+            .workspace_alias(route, project)
+            .unwrap_or_else(|| format!("{}.localhost", project.manifest.id.replace('_', "-")));
+        format!("webmail.{host}")
+    }
+}
+
+pub const WINDOWS_WEBMAIL_IP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(127, 77, 0, 1);
+
+pub fn project_smtp_ip(id: &str) -> std::net::Ipv4Addr {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(id.as_bytes());
+    std::net::Ipv4Addr::new(127, 128 + (digest[0] & 63), digest[1], digest[2])
+}
+
+impl Project {
+    pub fn has_mailpit(&self) -> bool {
+        self.manifest
+            .services
+            .iter()
+            .any(|service| service.id == "mailpit")
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -783,6 +1059,9 @@ mod tests {
             container: None,
             health: HealthCheck::default(),
             services: vec![],
+            tools: ProjectTools::default(),
+            tasks: vec![],
+            template: None,
             runtime: None,
             startup_timeout_seconds: 30,
             args: vec![],

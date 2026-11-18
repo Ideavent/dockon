@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
-const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_FILES: usize = 100_000;
 
 pub fn relative(path: &Path, parents: bool) -> Result<PathBuf> {
@@ -112,6 +112,16 @@ fn copy_limited(mut reader: impl Read, output: &mut File, size: u64) -> Result<(
 }
 
 pub fn extract(archive: &Path, format: &str, prefix: &str, destination: &Path) -> Result<()> {
+    extract_with_limit(archive, format, prefix, destination, MAX_BYTES)
+}
+
+pub fn extract_with_limit(
+    archive: &Path,
+    format: &str,
+    prefix: &str,
+    destination: &Path,
+    byte_limit: u64,
+) -> Result<()> {
     std::fs::create_dir(destination)?;
     let root = destination.canonicalize()?;
     let mut bytes = 0u64;
@@ -131,8 +141,8 @@ pub fn extract(archive: &Path, format: &str, prefix: &str, destination: &Path) -
             bytes = bytes
                 .checked_add(entry.size())
                 .context("Archive size overflow")?;
-            if bytes > MAX_BYTES {
-                bail!("Uncompressed runtime exceeds 4 GiB");
+            if bytes > byte_limit {
+                bail!("Uncompressed runtime exceeds its extraction limit");
             }
             if entry.encrypted() {
                 bail!("Encrypted runtime archives are not supported");
@@ -175,8 +185,8 @@ pub fn extract(archive: &Path, format: &str, prefix: &str, destination: &Path) -
             let kind = entry.header().entry_type();
             let size = entry.header().size()?;
             bytes = bytes.checked_add(size).context("Archive size overflow")?;
-            if bytes > MAX_BYTES {
-                bail!("Uncompressed runtime exceeds 4 GiB");
+            if bytes > byte_limit {
+                bail!("Uncompressed runtime exceeds its extraction limit");
             }
             if kind.is_dir() {
                 std::fs::create_dir_all(root.join(path))?;
