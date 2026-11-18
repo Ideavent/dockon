@@ -42,7 +42,7 @@ try {
   await h.launch();
   installation = await readFile(join(h.data, "installation.id"), "utf8");
   const capabilities = await h.call("capabilities");
-  assert.equal(capabilities.docker.available, true);
+  assert.equal(capabilities.docker.available, true, capabilities.docker.detail);
   assert.equal(typeof capabilities.podman.available, "boolean");
   for (const id of ["mixed-a", "mixed-b"])
     assert.equal(

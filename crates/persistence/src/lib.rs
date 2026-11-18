@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dockon_core::{Manifest, Operation};
+use dockon_core::{Manifest, Operation, RuntimeInstallation};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     Row, SqlitePool,
@@ -37,6 +37,15 @@ impl Store {
             .bind(serde_json::to_string(manifest)?)
             .execute(&self.0)
             .await?;
+        Ok(())
+    }
+    pub async fn update_manifest(&self, manifest: &Manifest) -> Result<()> {
+        let result = sqlx::query("UPDATE projects SET manifest=? WHERE id=?")
+            .bind(serde_json::to_string(manifest)?)
+            .bind(&manifest.id)
+            .execute(&self.0)
+            .await?;
+        anyhow::ensure!(result.rows_affected() == 1, "Project no longer exists");
         Ok(())
     }
     pub async fn begin(&self, id: &str, project: &str, action: &str) -> Result<()> {
@@ -81,6 +90,18 @@ impl Store {
             .bind(id)
             .execute(&self.0)
             .await?;
+        Ok(())
+    }
+    pub async fn runtimes(&self) -> Result<Vec<RuntimeInstallation>> {
+        sqlx::query("SELECT record FROM runtime_installations ORDER BY runtime,version")
+            .fetch_all(&self.0)
+            .await?
+            .into_iter()
+            .map(|row| Ok(serde_json::from_str(row.try_get("record")?)?))
+            .collect()
+    }
+    pub async fn save_runtime(&self, record: &RuntimeInstallation) -> Result<()> {
+        sqlx::query("INSERT INTO runtime_installations(id,runtime,version,record) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET runtime=excluded.runtime,version=excluded.version,record=excluded.record").bind(&record.id).bind(&record.runtime).bind(&record.version).bind(serde_json::to_string(record)?).execute(&self.0).await?;
         Ok(())
     }
 }

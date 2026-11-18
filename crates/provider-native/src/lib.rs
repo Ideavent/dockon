@@ -49,7 +49,13 @@ impl Instance {
             command
         };
         command
-            .args(&manifest.args)
+            .args(
+                manifest
+                    .args
+                    .iter()
+                    .map(|arg| arg.resolve(port, data_dir))
+                    .collect::<Result<Vec<_>>>()?,
+            )
             .current_dir(&manifest.root)
             .env("PORT", port.to_string())
             .env("HOST", "127.0.0.1")
@@ -59,6 +65,13 @@ impl Instance {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if manifest.runtime.is_some() {
+            command
+                .env_remove("NODE_OPTIONS")
+                .env_remove("NODE_PATH")
+                .env_remove("PYTHONHOME")
+                .env_remove("PYTHONPATH");
+        }
         #[cfg(unix)]
         command
             .process_group(0)

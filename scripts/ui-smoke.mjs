@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 const browser = await chromium.launch();
 try {
   const page = await browser.newPage({
-    viewport: { width: 1280, height: 850 },
+    viewport: { width: 410, height: 320 },
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -16,11 +16,31 @@ try {
     .waitFor();
   assert.equal(
     await page
-      .getByRole("button", { name: "Proje içe aktar", exact: true })
+      .getByRole("button", { name: "Yeni proje", exact: true })
       .isEnabled(),
     false,
   );
-  await page.getByRole("button", { name: "TR", exact: true }).click();
+  const navigation = page.getByRole("navigation", { name: "Ana gezinme" });
+  for (const [label, heading] of [
+    ["Günlükler", "Proje günlükleri"],
+    ["Yerel adresler", "Yerel adresler"],
+    ["Ayarlar", "Sürümler ve servisler"],
+    ["Tanılama", "Tanılama"],
+    ["Projeler", "Projeler"],
+  ]) {
+    const tab = navigation.getByRole("button", { name: label, exact: true });
+    await tab.click();
+    assert.equal(await tab.getAttribute("aria-current"), "page");
+    await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+      false,
+    );
+  }
+  await page.getByRole("button", { name: "Menü", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
   assert.equal(
     await page.evaluate(

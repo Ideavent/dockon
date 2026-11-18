@@ -1,0 +1,20 @@
+[package]
+name = "dockon-runtime-manager"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+dockon-core.workspace = true
+dockon-persistence.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+sha2 = "0.10"
+semver = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+zip = { version = "9.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+flate2 = "1"
+tar = "0.4"
+dunce = "1"

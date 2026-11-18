@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   QueryClient,
   QueryClientProvider,
@@ -9,135 +10,207 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import {
-  Box,
-  FolderGit2,
-  Activity,
-  Play,
-  Square,
-  RefreshCw,
-  Terminal,
   ArrowUpRight,
-  Layers3,
-  Globe,
+  FolderOpen,
+  Menu,
+  MoreHorizontal,
+  Play,
   Plus,
-  Circle,
+  RefreshCw,
+  Square,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
+import {
+  request,
+  waitOperation,
+  type Operation,
+  type Reply,
+} from "./ipc/client";
+import { RuntimePage } from "./features/runtimes/RuntimePage";
+import { ProjectWizard } from "./features/projects/ProjectWizard";
+import { RouterPage } from "./features/routing/RouterPage";
+import { DiagnosticsPage } from "./features/diagnostics/DiagnosticsPage";
+import { ProjectSettings } from "./features/projects/ProjectSettings";
 import "./styles.css";
 
+type Folder = {
+  name: string;
+  path: string;
+  static_site?: boolean;
+};
 type Project = {
   manifest: {
     id: string;
     name: string;
     root: string;
-    executable: string;
     provider?: "native" | "container";
+    runtime?: { installation_id: string };
     health?: { type: "http" | "tcp" };
-    services?: { provider?: "native" | "container" }[];
+    services?: {
+      id: string;
+      runtime?: { installation_id: string };
+      container?: { image: string };
+    }[];
   };
   state: string;
-  pid: number | null;
   port: number | null;
   error: string | null;
-  container_id?: string | null;
-  services?: { id: string; state: string; port: number }[];
+  services?: { id: string; state: string; port: number; smtp_port?: number }[];
 };
-type Event = { seq: number; project_id: string; kind: string; message: string };
-type Operation = { id: string; status: string; error: string | null };
-type Reply<T> = { ok: boolean; data: T; error?: string };
-const words = {
-  tr: {
-    projects: "Projeler",
-    subtitle: "Geliştirme ortamların. Kontrol sende.",
-    connected: "Daemon bağlı",
-    disconnected: "Daemon bağlantısı yok",
-    start: "Başlat",
-    stop: "Durdur",
-    running: "Çalışan",
-    registered: "Kayıtlı proje",
-    activity: "Canlı günlükler",
-    refresh: "Yeniden bağlan",
-    empty: "Henüz proje yok",
-    emptyHelp: "Bir Dockon proje manifesti içe aktararak başla.",
-    import: "Proje içe aktar",
-    manifest: "Manifest dosyasının tam yolu",
-    local: "Yerel çalışma alanı",
-    noEvents: "Proje olayları burada görünecek.",
-    foundation: "Geliştirme sürümü · Sprint 02",
-    native: "Yerel süreç",
-    open: "Tarayıcıda aç",
-    cancel: "Vazgeç",
-    offline: "Masaüstü bağlantısı gerekli",
-    offlineHelp:
-      "Gerçek proje yönetimi için Dockon masaüstü uygulamasını çalıştır.",
-    logs: "Etkinlik",
-    all: "Tüm projeler",
-  },
-  en: {
-    projects: "Projects",
-    subtitle: "Your development environments. In your control.",
-    connected: "Daemon connected",
-    disconnected: "Daemon disconnected",
-    start: "Start",
-    stop: "Stop",
-    running: "Running",
-    registered: "Registered projects",
-    activity: "Live logs",
-    refresh: "Reconnect",
-    empty: "No projects yet",
-    emptyHelp: "Import a Dockon project manifest to get started.",
-    import: "Import project",
-    manifest: "Absolute path to manifest file",
-    local: "Local workspace",
-    noEvents: "Project events will appear here.",
-    foundation: "Development · Sprint 02",
-    native: "Native process",
-    open: "Open in browser",
-    cancel: "Cancel",
-    offline: "Desktop connection required",
-    offlineHelp:
-      "Launch the Dockon desktop application to manage real projects.",
-    logs: "Activity",
-    all: "All projects",
-  },
+const databaseNames = { postgres: "PostgreSQL", mysql: "MySQL" };
+type DatabaseEngine = keyof typeof databaseNames;
+type DatabaseTarget = { id: string; engine: DatabaseEngine };
+type DatabaseConnection = {
+  host: string;
+  port: number;
+  user: string;
+  database: string;
+  password: string;
 };
-async function request<T>(method: string, params?: object): Promise<T> {
-  const response = await invoke<Reply<T>>("request", {
-    command: { method, ...(params ? { params } : {}) },
-  }).catch((error) => {
-    throw new Error(String(error));
-  });
-  if (!response.ok) throw new Error(response.error || "Daemon request failed");
-  return response.data;
+
+function getDatabaseConnection(target: DatabaseTarget) {
+  return request<DatabaseConnection>("database_connection", target);
 }
+
+function databaseUrl(engine: DatabaseEngine, connection: DatabaseConnection) {
+  const encode = encodeURIComponent;
+  return `${engine === "postgres" ? "postgresql" : "mysql"}://${encode(connection.user)}:${encode(connection.password)}@${connection.host}:${connection.port}/${encode(connection.database)}`;
+}
+
+type Event = { seq: number; project_id: string; kind: string; message: string };
+type Page = "home" | "runtimes" | "routing" | "diagnostics" | "logs";
+const desktop = "__TAURI_INTERNALS__" in window;
+const normalizePath = (path: string) =>
+  path
+    .replace(/^\\\\\?\\/, "")
+    .replaceAll("\\", "/")
+    .replace(/\/$/, "")
+    .toLowerCase();
+const active = (project: Project) =>
+  ["RUNNING", "DEGRADED"].includes(project.state);
+
+function ActionMenu({
+  label,
+  icon,
+  children,
+}: {
+  label: string;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  const menu = useRef<HTMLDetailsElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (!menu.current?.contains(event.target as Node) && menu.current)
+        menu.current.open = false;
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, []);
+  return (
+    <details
+      ref={menu}
+      className="dock-menu"
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && menu.current?.open) {
+          menu.current.open = false;
+          menu.current.querySelector("summary")?.focus();
+        }
+      }}
+    >
+      <summary
+        className="dock-control"
+        role="button"
+        aria-expanded={expanded}
+        aria-label={label}
+        title={label}
+      >
+        {icon}
+      </summary>
+      <div
+        className="dock-menu-items"
+        onClick={(event) => {
+          if ((event.target as Element).closest("button") && menu.current) {
+            menu.current.open = false;
+            menu.current.querySelector("summary")?.focus();
+          }
+        }}
+      >
+        {children}
+      </div>
+    </details>
+  );
+}
+
 function App() {
+  const [page, setPage] = useState<Page>("home");
   const [lang, setLang] = useState<"tr" | "en">("tr");
-  const t = words[lang];
-  const desktop = "__TAURI_INTERNALS__" in window;
+  const tr = lang === "tr";
+  const t = {
+    open: tr ? "Tarayıcıda aç" : "Open in browser",
+    start: tr ? "Başlat" : "Start",
+    stop: tr ? "Durdur" : "Stop",
+    import: tr ? "Manifest içe aktar" : "Import manifest",
+    cancel: tr ? "Vazgeç" : "Cancel",
+    manifest: tr
+      ? "Manifest dosyasının tam yolu"
+      : "Absolute path to manifest file",
+  };
+  const pages = {
+    home: tr ? "Projeler" : "Projects",
+    runtimes: tr ? "Ayarlar" : "Settings",
+    routing: tr ? "Yerel adresler" : "Local addresses",
+    diagnostics: tr ? "Tanılama" : "Diagnostics",
+    logs: tr ? "Günlükler" : "Logs",
+  };
   const cache = useQueryClient();
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
+  const [wizard, setWizard] = useState(false);
+  const [folder, setFolder] = useState<Folder>();
+  const [settingsProject, setSettingsProject] = useState<Project>();
+  const [clipboardNotice, setClipboardNotice] = useState("");
+  useEffect(() => {
+    if (!clipboardNotice) return;
+    const timer = setTimeout(() => setClipboardNotice(""), 3000);
+    return () => clearTimeout(timer);
+  }, [clipboardNotice]);
+  const [restoreBackup, setRestoreBackup] = useState("");
   const [path, setPath] = useState("");
   const [events, setEvents] = useState<Event[]>([]);
   const [selected, setSelected] = useState("");
-  const cursor = useRef(0);
-  const epoch = useRef("");
+  const refresh = () => {
+    for (const key of ["projects", "workspace-folders"]) {
+      void cache.invalidateQueries({ queryKey: [key] });
+    }
+  };
   const connect = useMutation({
     mutationFn: () => invoke<Reply<unknown>>("connect"),
     onSuccess: (reply) => {
       setConnected(reply.ok);
       setError(reply.error || "");
-      cursor.current = 0;
-      setEvents([]);
+      refresh();
     },
-    onError: (e) => {
+    onError: (error) => {
       setConnected(false);
-      setError(String(e));
+      setError(String(error));
     },
   });
   useEffect(() => {
     if (desktop) connect.mutate();
+  }, []);
+  useEffect(() => {
+    if (!desktop) return;
+    const listener = listen<string>("desktop-error", (event) =>
+      setError(event.payload),
+    );
+    void listener.catch((error) => setError(String(error)));
+    return () => {
+      void listener.then((unlisten) => unlisten()).catch(() => {});
+    };
   }, []);
   const projects = useQuery({
     queryKey: ["projects"],
@@ -146,40 +219,37 @@ function App() {
     refetchInterval: 1500,
     retry: false,
   });
+  const online = connected && !projects.isError;
+  const workspace = useQuery({
+    queryKey: ["workspace-folders"],
+    queryFn: () =>
+      request<{ root: string; folders: Folder[] }>("workspace_folders"),
+    enabled: online,
+    refetchInterval: 3000,
+  });
   useEffect(() => {
-    if (!connected) return;
-    const channel = new Channel<{
-      epoch: string;
-      events: Event[];
-      truncated: boolean;
-    }>();
+    if (!connected || page !== "logs") return;
+    let epoch = "";
+    const channel = new Channel<{ epoch: string; events: Event[] }>();
     channel.onmessage = (batch) => {
-      const changed = batch.epoch !== epoch.current;
-      if (changed) {
-        epoch.current = batch.epoch;
-        cursor.current = 0;
-      }
-      const next = batch.events.filter((event) => event.seq > cursor.current);
-      if (next.length) cursor.current = next[next.length - 1].seq;
-      if (changed || next.length)
-        setEvents((old) => [...(changed ? [] : old), ...next].slice(-300));
-      if (
-        changed ||
-        next.some((event) => event.kind === "state" || event.kind === "error")
-      )
-        cache.invalidateQueries({ queryKey: ["projects"] });
-      if (batch.truncated)
-        setError(
-          lang === "tr"
-            ? "Günlük tamponu doldu; eski olayların bir bölümü artık mevcut değil."
-            : "Log buffer overflow: some earlier events are no longer available.",
-        );
+      const changed = epoch !== batch.epoch;
+      epoch = batch.epoch;
+      setEvents((previous) => {
+        const kept = changed ? [] : previous;
+        const after = kept.at(-1)?.seq ?? 0;
+        return [
+          ...kept,
+          ...batch.events.filter((event) => event.seq > after),
+        ].slice(-300);
+      });
     };
-    invoke("watch_events", { channel }).catch((e) => setError(String(e)));
+    void invoke("watch_events", { channel }).catch((error) =>
+      setError(String(error)),
+    );
     return () => {
-      invoke("stop_events").catch(() => {});
+      void invoke("stop_events").catch(() => {});
     };
-  }, [connected]);
+  }, [connected, page]);
   const action = useMutation({
     mutationFn: async ({
       method,
@@ -189,338 +259,605 @@ function App() {
       params: object;
     }) => {
       const reply = await request<Operation>(method, params);
-      if (method === "start" || method === "stop") {
-        for (let attempt = 0; attempt < 1800; attempt++) {
-          const operation = await request<Operation>("operation", {
-            id: reply.id,
-          });
-          if (operation.status === "completed") return operation;
-          if (operation.status !== "running")
-            throw new Error(operation.error || operation.status);
-          await new Promise((resolve) => setTimeout(resolve, 200));
-        }
-        throw new Error(`Operation ${reply.id}: status check timed out`);
+      const outcome = ["start", "stop", "postgres_restore"].includes(method)
+        ? waitOperation(reply.id)
+        : reply;
+      if (method === "start" && "id" in params) {
+        await outcome;
+        await invoke("prepare_project_address", { id: params.id });
       }
-      return reply;
+      return outcome;
     },
+    onMutate: () => setError(""),
     onSuccess: () => {
-      setError("");
       setImporting(false);
-      cache.invalidateQueries({ queryKey: ["projects"] });
     },
-    onError: (e) => setError(String(e)),
-    onSettled: () => cache.invalidateQueries({ queryKey: ["projects"] }),
+    onError: (error) => setError(String(error)),
+    onSettled: refresh,
   });
-  const items = projects.data || [];
-  const providers = new Set(
-    items.flatMap((project) => [
-      project.manifest.provider || "native",
-      ...(project.manifest.services || []).map(
-        (service) => service.provider || "native",
+  const connectionDetails = useMutation({
+    mutationFn: getDatabaseConnection,
+    onMutate: () => {
+      setError("");
+      setRestoreBackup("");
+    },
+    onError: (error) => setError(String(error)),
+  });
+  const copyConnection = useMutation({
+    mutationFn: async (target: DatabaseTarget) => {
+      const connection = await getDatabaseConnection(target);
+      await navigator.clipboard.writeText(
+        databaseUrl(target.engine, connection),
+      );
+    },
+    onMutate: () => {
+      setError("");
+      setClipboardNotice("");
+    },
+    onSuccess: () =>
+      setClipboardNotice(
+        tr
+          ? "Bağlantı adresi panoya kopyalandı."
+          : "Connection URL copied to clipboard.",
       ),
-    ]),
+    onError: (error) => setError(String(error)),
+  });
+  const postgresBackup = useMutation({
+    mutationFn: (id: string) => request<string>("postgres_backup", { id }),
+    onSuccess: () =>
+      cache.invalidateQueries({ queryKey: ["postgres-backups"] }),
+    onError: (error) => setError(String(error)),
+  });
+  const postgresBackups = useQuery({
+    queryKey: ["postgres-backups", connectionDetails.variables?.id],
+    queryFn: () =>
+      request<string[]>("postgres_backups", {
+        id: connectionDetails.variables?.id,
+      }),
+    enabled:
+      connectionDetails.isSuccess &&
+      connectionDetails.variables?.engine === "postgres",
+  });
+  const items = projects.data ?? [];
+  const registered = new Set(
+    items.map((entry) => normalizePath(entry.manifest.root)),
   );
-  const visible = selected
-    ? events.filter((e) => e.project_id === selected)
-    : events;
-  const failure = error || projects.error?.message;
+  const folders =
+    workspace.data?.folders.filter(
+      (entry) => !registered.has(normalizePath(entry.path)),
+    ) ?? [];
+  const failure = error || projects.error?.message || workspace.error?.message;
+  const launchTool = (command: string, params?: Record<string, unknown>) => {
+    setError("");
+    void invoke(command, params).catch((error) => setError(String(error)));
+  };
+  const openProject = (id: string, inbox?: boolean) => {
+    setError("");
+    void invoke("open_project", { id, inbox }).catch((error) =>
+      setError(String(error)),
+    );
+  };
+  const setupProject = (entry?: Folder) => {
+    setFolder(entry);
+    setWizard(true);
+  };
+  const changeProject = (project: Project, method: "start" | "stop") =>
+    action.mutate({ method, params: { id: project.manifest.id } });
+  const labels: Record<string, string> = tr
+    ? {
+        RUNNING: "Çalışıyor",
+        STOPPED: "Durdu",
+        FAILED: "Hata",
+        STARTING: "Başlatılıyor",
+        STOPPING: "Durduruluyor",
+        DEGRADED: "Sorunlu",
+      }
+    : {
+        RUNNING: "Running",
+        STOPPED: "Stopped",
+        FAILED: "Failed",
+        STARTING: "Starting",
+        STOPPING: "Stopping",
+        DEGRADED: "Degraded",
+      };
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-icon">
-            <Layers3 size={23} />
-          </div>
-          dockon<span className="version">alpha</span>
-        </div>
-        <div className="workspace-label">WORKSPACE</div>
-        <div className="nav-current">
-          <FolderGit2 size={18} />
-          {t.projects}
-          <span>{items.length}</span>
-        </div>
-        <a className="nav-link" href="#activity">
-          <Activity size={18} />
-          {t.logs}
-        </a>
-        <div className="sidebar-bottom">
-          <div className="local-icon">
-            <Box size={19} />
-          </div>
-          <div>
-            {t.local}
-            <small>{t.foundation}</small>
-          </div>
-        </div>
-      </aside>
-      <main>
-        <header>
-          <span>
-            WORKSPACE <span className="slash">/</span> {t.projects}
-          </span>
-          <div className="header-tools">
+    <div className="dock-shell">
+      <header className="dock-header">
+        <img
+          className="dock-brand-product"
+          src="/dockon-logo.svg"
+          alt="Dockon"
+        />
+        <ActionMenu label={tr ? "Menü" : "Menu"} icon={<Menu size={19} />}>
+          <button
+            disabled={!online}
+            onClick={() => launchTool("open_workspace")}
+          >
+            <FolderOpen size={15} aria-hidden="true" />
+            {tr ? "www klasörünü aç" : "Open www folder"}
+          </button>
+          <button disabled={!online} onClick={() => setImporting(true)}>
+            {t.import}
+          </button>
+          <hr />
+          <button onClick={() => setLang(tr ? "en" : "tr")}>
+            {tr ? "English" : "Türkçe"}
+          </button>
+        </ActionMenu>
+      </header>
+      <nav
+        className="dock-nav"
+        aria-label={tr ? "Ana gezinme" : "Main navigation"}
+      >
+        {(["home", "logs", "routing", "runtimes", "diagnostics"] as const).map(
+          (item) => (
             <button
-              className="language"
-              onClick={() => setLang(lang === "tr" ? "en" : "tr")}
+              key={item}
+              type="button"
+              aria-current={page === item ? "page" : undefined}
+              onClick={() => {
+                if (item === "logs") setSelected("");
+                setPage(item);
+              }}
             >
-              <Globe size={14} />
-              {lang.toUpperCase()}
+              {pages[item]}
             </button>
-            <span
-              className={
-                "connection " + (connected && !projects.isError ? "online" : "")
-              }
+          ),
+        )}
+      </nav>
+      <main className="dock-main">
+        {failure && (
+          <div className="error dock-error" role="alert">
+            {failure}
+            <button
+              className="dock-control"
+              onClick={() => setError("")}
+              hidden={!error}
+              aria-label={tr ? "Kapat" : "Dismiss"}
             >
-              <Circle size={7} fill="currentColor" />
-              {connected && !projects.isError ? t.connected : t.disconnected}
-            </span>
+              ×
+            </button>
           </div>
-        </header>
-        <div className="content">
-          <section className="page-heading">
-            <div>
-              <div className="eyebrow">BUILD SOMETHING GREAT</div>
-              <h1>{t.projects}</h1>
-              <p>{t.subtitle}</p>
-            </div>
-            <Button
-              variant="primary"
-              disabled={!connected || projects.isError || action.isPending}
-              onClick={() => setImporting(true)}
-            >
-              <Plus size={17} />
-              {t.import}
-            </Button>
-          </section>
-          {!desktop && (
-            <div className="notice">
-              <strong>{t.offline}</strong>
-              <p>{t.offlineHelp}</p>
-            </div>
-          )}
-          {failure && (
-            <div className="error" role="alert">
-              {failure}
-            </div>
-          )}
-          {desktop && (!connected || projects.isError) && (
-            <Button
-              disabled={connect.isPending}
-              onClick={() => connect.mutate()}
-            >
-              <RefreshCw size={15} />
-              {t.refresh}
-            </Button>
-          )}
-          <section className="stats">
-            <div>
-              <span>{t.registered}</span>
-              <strong>
-                {connected && !projects.isError && projects.data
-                  ? items.length
-                  : "—"}
-              </strong>
-              <FolderGit2 size={20} />
-            </div>
-            <div>
-              <span>{t.running}</span>
-              <strong>
-                {connected && !projects.isError && projects.data
-                  ? items.filter((p) => p.state === "RUNNING").length
-                  : "—"}
-              </strong>
-              <Activity size={20} />
-            </div>
-            <div>
-              <span>PROVIDER</span>
-              <strong className="stat-word">
-                {!connected || projects.isError
-                  ? "—"
-                  : providers.size > 1
-                    ? "Hybrid"
-                    : providers.has("container")
-                      ? "Container"
-                      : t.native}
-              </strong>
-              <Box size={20} />
-            </div>
-          </section>
-          <div className="section-label">
-            {t.all}
-            <span>{items.length}</span>
-          </div>
-          <section className="project-grid">
-            {items.map((project) => (
-              <article className="project-card" key={project.manifest.id}>
-                <div className="card-top">
-                  <div className="project-icon">
-                    <Terminal size={22} />
-                  </div>
-                  <span
-                    className={"status status-" + project.state.toLowerCase()}
-                  >
-                    <Circle size={6} fill="currentColor" />
-                    {project.state}
-                  </span>
-                </div>
-                <h2>{project.manifest.name}</h2>
-                <p className="project-path" title={project.manifest.root}>
-                  {project.manifest.root.replace(/^\\\\\?\\/, "")}
-                </p>
-                <div className="project-meta">
-                  <span>
-                    <Box size={13} />
-                    {project.manifest.provider || "native"}
-                  </span>
-                  <span>
-                    {project.container_id
-                      ? project.container_id.slice(0, 10)
-                      : `PID ${project.pid ?? "—"}`}
-                  </span>
-                  <span>:{project.port ?? "—"}</span>
-                </div>
-                {!!project.services?.length && (
-                  <div className="service-list">
-                    {project.services.map((service) => (
-                      <div key={service.id}>
-                        <span>{service.id}</span>
-                        <span>
-                          {service.state} · :{service.port}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {project.error && (
-                  <p className="project-error">{project.error}</p>
-                )}
-                <div className="card-actions">
-                  <Button
-                    variant={
-                      ["RUNNING", "DEGRADED"].includes(project.state)
-                        ? "secondary"
-                        : "primary"
-                    }
-                    disabled={
-                      projects.isError ||
-                      action.isPending ||
-                      project.state === "STARTING" ||
-                      project.state === "STOPPING"
-                    }
-                    onClick={() =>
-                      action.mutate({
-                        method: ["RUNNING", "DEGRADED"].includes(project.state)
-                          ? "stop"
-                          : "start",
-                        params: { id: project.manifest.id },
-                      })
-                    }
-                  >
-                    {["RUNNING", "DEGRADED"].includes(project.state) ? (
-                      <Square size={13} />
-                    ) : (
-                      <Play size={13} />
-                    )}{" "}
-                    {["RUNNING", "DEGRADED"].includes(project.state)
-                      ? t.stop
-                      : t.start}
-                  </Button>
-                  {project.state === "FAILED" && (
-                    <Button
-                      disabled={action.isPending || projects.isError}
-                      onClick={() =>
-                        action.mutate({
-                          method: "stop",
-                          params: { id: project.manifest.id },
-                        })
-                      }
-                    >
-                      <Square size={13} />
-                      {t.stop}
-                    </Button>
-                  )}
-                  {project.port &&
-                    project.state === "RUNNING" &&
-                    project.manifest.health?.type !== "tcp" && (
-                      <a
-                        className="open-link"
-                        href={`http://127.0.0.1:${project.port}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label={t.open}
-                        onClick={(event) => {
-                          if (desktop) {
-                            event.preventDefault();
-                            invoke("open_project", {
-                              id: project.manifest.id,
-                            }).catch((error) => setError(String(error)));
-                          }
-                        }}
-                      >
-                        <ArrowUpRight size={18} />
-                      </a>
-                    )}
-                </div>
-              </article>
-            ))}
-            {connected && !projects.isPending && !items.length && (
-              <div className="empty">
-                <FolderGit2 size={32} />
-                <h2>{t.empty}</h2>
-                <p>{t.emptyHelp}</p>
-              </div>
-            )}
-          </section>
-          <section className="logs" id="activity">
+        )}
+        {page === "runtimes" && <RuntimePage connected={online} lang={lang} />}
+        {page === "routing" && <RouterPage connected={online} lang={lang} />}
+        {page === "diagnostics" && (
+          <DiagnosticsPage connected={online} lang={lang} />
+        )}
+        {page === "logs" && (
+          <section className="logs">
             <div className="log-header">
-              <h2>
-                <Terminal size={16} />
-                {t.activity}
-              </h2>
+              <h1>{tr ? "Proje günlükleri" : "Project logs"}</h1>
               <select
-                aria-label={t.all}
+                aria-label={tr ? "Proje filtresi" : "Project filter"}
                 value={selected}
-                onChange={(e) => setSelected(e.target.value)}
+                onChange={(event) => setSelected(event.target.value)}
               >
-                <option value="">{t.all}</option>
-                {items.map((p) => (
-                  <option key={p.manifest.id} value={p.manifest.id}>
-                    {p.manifest.name}
+                <option value="">{tr ? "Tüm projeler" : "All projects"}</option>
+                {items.map((project) => (
+                  <option key={project.manifest.id} value={project.manifest.id}>
+                    {project.manifest.name}
                   </option>
                 ))}
               </select>
             </div>
             <div className="log-body" role="log">
-              {!visible.length && <div className="log-empty">{t.noEvents}</div>}
-              {visible.map((event) => (
-                <div
-                  className={
-                    "log-line " +
-                    (event.kind === "error" || event.kind === "stderr"
-                      ? "log-error"
-                      : "")
-                  }
-                  key={event.seq}
-                >
-                  <span>{String(event.seq).padStart(4, "0")}</span>
-                  <span>{event.project_id}</span>
-                  <code>{event.message}</code>
-                </div>
-              ))}
+              {events
+                .filter((event) => !selected || event.project_id === selected)
+                .map((event) => (
+                  <div
+                    className={
+                      "log-line " +
+                      (["error", "stderr"].includes(event.kind)
+                        ? "log-error"
+                        : "")
+                    }
+                    key={event.seq}
+                  >
+                    <span>{event.seq}</span>
+                    <span>{event.project_id}</span>
+                    <code>{event.message}</code>
+                  </div>
+                ))}
+              {!events.some(
+                (event) => !selected || event.project_id === selected,
+              ) && (
+                <p className="log-empty">
+                  {tr ? "Henüz günlük kaydı yok." : "No log entries yet."}
+                </p>
+              )}
             </div>
           </section>
-        </div>
-        <footer>
-          <span>
-            <Circle size={6} fill="currentColor" /> DOCKON LOCAL ENGINE
-          </span>
-          <span>v0.1.0 · {t.foundation}</span>
-        </footer>
+        )}
+        {page === "home" && (
+          <>
+            {!online && (
+              <section
+                className="dock-stack"
+                aria-label={tr ? "Bağlantı" : "Connection"}
+              >
+                <div className="dock-stack-state" role="status">
+                  <span className="dock-dot" />
+                  <strong>
+                    {!desktop
+                      ? tr
+                        ? "Masaüstü bağlantısı gerekli"
+                        : "Desktop connection required"
+                      : connect.isPending
+                        ? tr
+                          ? "Bağlanıyor…"
+                          : "Connecting…"
+                        : tr
+                          ? "Bağlantı kesildi"
+                          : "Disconnected"}
+                  </strong>
+                </div>
+                {desktop && (
+                  <Button
+                    disabled={connect.isPending}
+                    onClick={() => connect.mutate()}
+                  >
+                    <RefreshCw size={15} />
+                    {tr ? "Yeniden bağlan" : "Reconnect"}
+                  </Button>
+                )}
+              </section>
+            )}
+            <section aria-labelledby="projects-heading">
+              <div className="dock-section-title">
+                <h1 id="projects-heading">{pages.home}</h1>
+                <Button
+                  variant="primary"
+                  disabled={!online || !workspace.data}
+                  onClick={() => setupProject()}
+                >
+                  <Plus size={17} aria-hidden="true" />
+                  {tr ? "Yeni proje" : "New project"}
+                </Button>
+              </div>
+              <ul className="dock-projects">
+                {items.map((project) => {
+                  const id = project.manifest.id;
+                  const engines = (
+                    Object.keys(databaseNames) as DatabaseEngine[]
+                  ).filter((engine) =>
+                    project.manifest.services?.some(
+                      (service) => service.id === engine,
+                    ),
+                  );
+                  const canOpen =
+                    project.state === "RUNNING" &&
+                    project.port &&
+                    project.manifest.health?.type !== "tcp";
+                  const pending = ["STARTING", "STOPPING"].includes(
+                    project.state,
+                  );
+                  return (
+                    <li className="dock-project" key={id}>
+                      <span
+                        className={
+                          "dock-dot " +
+                          (active(project)
+                            ? "dock-dot-active"
+                            : project.error
+                              ? "dock-dot-error"
+                              : "")
+                        }
+                      />
+                      <div className="dock-project-name">
+                        <strong title={project.manifest.root}>
+                          {project.manifest.name}
+                        </strong>
+                        <span
+                          className={project.error ? "dock-project-error" : ""}
+                          title={project.error ?? undefined}
+                        >
+                          {project.error ||
+                            labels[project.state] ||
+                            project.state}
+                        </span>
+                      </div>
+                      {canOpen && (
+                        <button
+                          className="dock-control"
+                          disabled={!online}
+                          title={t.open}
+                          aria-label={t.open}
+                          onClick={() => openProject(id)}
+                        >
+                          <ArrowUpRight size={17} />
+                        </button>
+                      )}
+                      <button
+                        className="dock-control dock-project-toggle"
+                        disabled={!online || pending || action.isPending}
+                        title={active(project) ? t.stop : t.start}
+                        aria-label={active(project) ? t.stop : t.start}
+                        onClick={() =>
+                          changeProject(
+                            project,
+                            active(project) ? "stop" : "start",
+                          )
+                        }
+                      >
+                        {active(project) ? (
+                          <Square size={14} />
+                        ) : (
+                          <Play size={15} />
+                        )}
+                        <span>{active(project) ? t.stop : t.start}</span>
+                      </button>
+                      <ActionMenu
+                        label={tr ? "Proje işlemleri" : "Project actions"}
+                        icon={<MoreHorizontal size={18} />}
+                      >
+                        <button
+                          disabled={!online}
+                          onClick={() => {
+                            setSettingsProject(project);
+                          }}
+                        >
+                          {tr ? "Proje ayarları" : "Project settings"}
+                        </button>
+                        <button
+                          disabled={!online}
+                          onClick={() => launchTool("project_terminal", { id })}
+                        >
+                          {tr ? "Proje terminali" : "Project terminal"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelected(id);
+                            setPage("logs");
+                          }}
+                        >
+                          {pages.logs}
+                        </button>
+                        {engines.length > 0 && <hr />}
+                        {engines.map((engine) => {
+                          const ready = project.services?.some(
+                            (service) =>
+                              service.id === engine &&
+                              service.state === "RUNNING",
+                          );
+                          return (
+                            <button
+                              key={engine}
+                              type="button"
+                              disabled={
+                                !online || !ready || connectionDetails.isPending
+                              }
+                              onClick={() =>
+                                connectionDetails.mutate({ id, engine })
+                              }
+                            >
+                              {databaseNames[engine]} ·{" "}
+                              {tr ? "Bağlantı bilgileri" : "Connection details"}
+                            </button>
+                          );
+                        })}
+                        {project.state === "FAILED" && (
+                          <button
+                            disabled={action.isPending}
+                            onClick={() => changeProject(project, "stop")}
+                          >
+                            {t.stop}
+                          </button>
+                        )}
+                        {project.services?.some(
+                          (service) =>
+                            service.id === "mailpit" &&
+                            service.state === "RUNNING" &&
+                            service.smtp_port,
+                        ) && (
+                          <button onClick={() => openProject(id, true)}>
+                            {tr ? "Proje gelen kutusu" : "Project inbox"}
+                          </button>
+                        )}
+                      </ActionMenu>
+                    </li>
+                  );
+                })}
+                {folders.map((entry) => (
+                  <li className="dock-project" key={entry.path}>
+                    <span className="dock-dot" />
+                    <div className="dock-project-name">
+                      <strong title={entry.path}>{entry.name}</strong>
+                      <span>
+                        {entry.static_site
+                          ? tr
+                            ? "Statik site"
+                            : "Static site"
+                          : tr
+                            ? "www klasörü"
+                            : "www folder"}
+                      </span>
+                    </div>
+                    <button
+                      className="dock-control"
+                      disabled={!online}
+                      onClick={() => setupProject(entry)}
+                    >
+                      {tr ? "Ayarla" : "Configure"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {workspace.isSuccess &&
+                projects.isSuccess &&
+                !folders.length &&
+                !items.length && (
+                  <p className="dock-empty">
+                    {tr
+                      ? "Yeni proje oluştur veya mevcut bir klasörü içe aktar."
+                      : "Create a project or import an existing folder."}
+                  </p>
+                )}
+            </section>
+          </>
+        )}
       </main>
+      <footer className="dock-footer">
+        <span lang="en">Made by</span>
+        <span className="dock-brand-maker">
+          <img src="/ideavent-logo.png" alt="Ideavent" />
+        </span>
+      </footer>
+      {wizard && (
+        <ProjectWizard
+          lang={lang}
+          folder={folder}
+          workspaceRoot={workspace.data?.root}
+          onClose={() => setWizard(false)}
+        />
+      )}
+      {settingsProject &&
+        (() => {
+          const project =
+            items.find(
+              (entry) => entry.manifest.id === settingsProject.manifest.id,
+            ) ?? settingsProject;
+          return (
+            <ProjectSettings
+              lang={lang}
+              project={project}
+              projects={items}
+              openLogs={() => {
+                setSelected(project.manifest.id);
+                setSettingsProject(undefined);
+                setPage("logs");
+              }}
+              openWeb={() => openProject(project.manifest.id)}
+              startWeb={() => changeProject(project, "start")}
+              onDownloads={() => {
+                setSettingsProject(undefined);
+                setPage("runtimes");
+              }}
+              openInbox={() => openProject(project.manifest.id, true)}
+              openTerminal={() =>
+                launchTool("project_terminal", { id: project.manifest.id })
+              }
+              onClose={() => setSettingsProject(undefined)}
+            />
+          );
+        })()}
+      {clipboardNotice && (
+        <p className="dock-clipboard-notice" role="status">
+          {clipboardNotice}
+        </p>
+      )}
+      {connectionDetails.data && (
+        <div className="modal-backdrop">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              tr
+                ? "Veritabanı bağlantı bilgileri"
+                : "Database connection details"
+            }
+          >
+            <h2>
+              {connectionDetails.variables &&
+                databaseNames[connectionDetails.variables.engine]}
+            </h2>
+            <p>
+              {connectionDetails.data.host}:{connectionDetails.data.port} /{" "}
+              {connectionDetails.data.database}
+            </p>
+            <p>
+              {lang === "tr" ? "Kullanıcı" : "User"}{" "}
+              {connectionDetails.data.user}
+            </p>
+            <label htmlFor="database-password">
+              {lang === "tr" ? "Parola" : "Password"}
+            </label>
+            <input
+              id="database-password"
+              value={connectionDetails.data.password}
+              readOnly
+            />
+            <div className="dialog-actions">
+              <Button
+                disabled={copyConnection.isPending}
+                onClick={() => {
+                  if (connectionDetails.variables)
+                    copyConnection.mutate(connectionDetails.variables);
+                }}
+              >
+                {tr ? "Bağlantı adresini kopyala" : "Copy connection URL"}
+              </Button>
+              <Button
+                onClick={() => {
+                  connectionDetails.reset();
+                  setRestoreBackup("");
+                }}
+              >
+                {lang === "tr" ? "Kapat" : "Close"}
+              </Button>
+              {connectionDetails.variables?.engine === "postgres" && (
+                <Button
+                  disabled={postgresBackup.isPending}
+                  onClick={() =>
+                    postgresBackup.mutate(connectionDetails.variables!.id)
+                  }
+                >
+                  {lang === "tr" ? "SQL yedeği oluştur" : "Create SQL backup"}
+                </Button>
+              )}
+            </div>
+            {connectionDetails.variables?.engine === "postgres" &&
+              !!postgresBackups.data?.length && (
+                <>
+                  <label htmlFor="postgres-backup">
+                    {lang === "tr" ? "SQL yedeği" : "SQL backup"}
+                  </label>
+                  <select
+                    id="postgres-backup"
+                    value={restoreBackup}
+                    onChange={(event) => setRestoreBackup(event.target.value)}
+                  >
+                    <option value="">
+                      {lang === "tr" ? "Yedek seç" : "Choose backup"}
+                    </option>
+                    {postgresBackups.data.map((backup) => (
+                      <option key={backup}>{backup}</option>
+                    ))}
+                  </select>
+                  <Button
+                    disabled={action.isPending || !restoreBackup}
+                    onClick={() =>
+                      action.mutate({
+                        method: "postgres_restore",
+                        params: {
+                          id: connectionDetails.variables?.id,
+                          backup: restoreBackup,
+                        },
+                      })
+                    }
+                  >
+                    {lang === "tr"
+                      ? "Yedeği yeni veritabanına yükle"
+                      : "Restore backup to a new database"}
+                  </Button>
+                  {action.variables?.method === "postgres_restore" &&
+                    action.data?.status === "completed" && (
+                      <p>dockon_restore_{action.data.id.replaceAll("-", "")}</p>
+                    )}
+                </>
+              )}
+            {error && <p role="alert">{error}</p>}
+          </section>
+        </div>
+      )}
       {importing && (
         <div className="modal-backdrop">
           <form
             className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t.import}
             onSubmit={(e) => {
               e.preventDefault();
               action.mutate({
@@ -539,7 +876,7 @@ function App() {
               required
             />
             <p>dockon.project.json</p>
-            <div>
+            <div className="dialog-actions">
               <Button type="button" onClick={() => setImporting(false)}>
                 {t.cancel}
               </Button>

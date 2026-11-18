@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/ipc", "crates/persistence", "crates/provider-native", "crates/provider-container", "crates/orchestrator", "crates/daemon", "examples/hello-http", "apps/desktop/src-tauri"]
+members = ["crates/core", "crates/ipc", "crates/persistence", "crates/provider-native", "crates/provider-container", "crates/runtime-manager", "crates/router", "crates/orchestrator", "crates/daemon", "examples/hello-http", "apps/desktop/src-tauri"]
 default-members = ["crates/daemon", "examples/hello-http"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.13"
 edition = "2021"
 
 [workspace.dependencies]
@@ -17,5 +17,6 @@ dockon-core = { path = "crates/core" }
 dockon-ipc = { path = "crates/ipc" }
 dockon-persistence = { path = "crates/persistence" }
 dockon-provider-native = { path = "crates/provider-native" }
-dockon-provider-container = { path = "crates/provider-container" }
+dockon-runtime-manager = { path = "crates/runtime-manager" }
+dockon-router = { path = "crates/router" }
 dockon-orchestrator = { path = "crates/orchestrator" }

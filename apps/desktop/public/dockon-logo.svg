@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 866 210" width="866" height="210" fill="none">
+  <defs>
+    <style>
+      .dock-primary { fill: #164293; }
+      .dock-accent { fill: #3B7EC4; }
+    </style>
+  </defs>
+
+  <g transform="translate(21, 21)">
+    <!-- d -->
+    <path class="dock-primary" fill-rule="evenodd" d="M 96 0 H 125 V 165 H 96 V 148 A 61 61 0 1 1 96 62 Z M 61 71 A 34 34 0 1 0 61 139 A 34 34 0 1 0 61 71 Z" />
+
+    <!-- o -->
+    <path class="dock-primary" fill-rule="evenodd" d="M 210.0 44.0 A 61.0 61.0 0 1 1 210.0 166.0 A 61.0 61.0 0 1 1 210.0 44.0 Z M 210.0 71.0 A 34.0 34.0 0 1 0 210.0 139.0 A 34.0 34.0 0 1 0 210.0 71.0 Z" />
+
+    <!-- c -->
+    <path class="dock-primary" d="M 407.86 76.36 A 61.0 61.0 0 1 0 407.86 133.64 L 384.02 120.96 A 34.0 34.0 0 1 1 384.02 89.04 Z" />
+
+    <!-- k -->
+    <path class="dock-primary" d="M 434 0 H 463 V 95 L 512 46 H 548 L 496 97 L 549 164 H 513 L 476 116 L 463 128 V 164 H 434 V 0 Z" />
+
+    <!-- o (power icon) -->
+    <rect class="dock-accent" x="616" y="26" width="20" height="68" rx="1.5" />
+    <path class="dock-accent" d="M 650.81 49.27 A 61.0 61.0 0 1 1 601.19 49.27 L 612.17 73.94 A 34.0 34.0 0 1 0 639.83 73.94 Z" />
+
+    <!-- n -->
+    <path class="dock-accent" d="M 712 46 H 741 V 60 C 750 49 762 44 777 44 C 806 44 824 64 824 96 V 164 H 795 V 101 C 795 81 785 70 768 70 C 752 70 741 81 741 101 V 164 H 712 V 46 Z" />
+  </g>
+</svg>
