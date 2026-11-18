@@ -1,6 +1,14 @@
-# dockon
+# Dockon
 
-Cross-platform local development environment manager. Working foundation under development; see [progress](docs/progress.md) and [limitations](docs/adr/0001-foundation.md).
+Dockon, [Ideavent](https://ideavent.tr/) tarafından geliştirilen ve ücretsiz sunulan bir yerel geliştirme ortamı yöneticisidir. Projelerini tek bir masaüstü uygulamasından başlatıp durdurabilir, her proje için çalışma zamanı seçebilir, yerel adresleri ve günlükleri yönetebilirsin.
+
+Dockon aktif olarak geliştiriliyor ve topluluk katkılarına açık. Hangi özelliklerin hazır olduğunu ve platformlara göre kapsamını [geliştirme durumu](docs/progress.md) ve [uyumluluk tablosundan](docs/compatibility-matrix.md) inceleyebilirsin.
+
+## Katkıda bulun
+
+- **Hata bildir.** GitHub’da bir [issue](https://github.com/Ideavent/dockon/issues) aç. Dockon sürümünü, işletim sistemini, hatayı tekrar oluşturma adımlarını ve beklediğin sonucu ekle.
+- **Özellik öner.** Çözmek istediğin sorunu ve özelliğin hangi iş akışında işe yarayacağını bir issue’da anlat.
+- **Kod veya dokümantasyon katkısı gönder.** Değişikliğini ayrı bir dalda yap, ilgili kontrolleri çalıştır ve bir [pull request](https://github.com/Ideavent/dockon/pulls) aç. Açıklamada neyi değiştirdiğini ve nasıl doğruladığını belirt.
 
 ## Windows development
 
@@ -43,3 +51,7 @@ The browser/native UI checks expect the Vite dev server to be running (`pnpm dev
 `hybrid-smoke.mjs` requires a running Docker Linux engine. It downloads only digest-pinned sample images as needed, creates uniquely labeled disposable test resources, verifies two-project Redis data isolation and recovery, then removes only those verified test resources. It does not touch existing Docker projects or images. Generic container launches are implemented; managed database catalogs and backup tooling are later sprints.
 
 Windows installed application target: C:\dockon. No production installer is available in Sprint 01. macOS/Linux builds require their own host dependencies and will be verified through CI when a GitHub remote is supplied. User projects and backups must survive uninstallation.
+
+## Lisans
+
+Dockon kaynak kodu [MIT Lisansı](LICENSE) kapsamında sunulur. Üçüncü taraf bileşenler kendi lisanslarına tabidir.
